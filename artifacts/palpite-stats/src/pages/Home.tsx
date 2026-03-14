@@ -48,46 +48,53 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
     <motion.div
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay: idx * 0.04 }}
+      transition={{ duration: 0.35, delay: idx * 0.03 }}
       className="h-full"
     >
       <div
         className={cn(
           "relative flex flex-col h-full rounded-2xl overflow-hidden border transition-all duration-300",
-          "bg-[#0d0d0f] shadow-xl shadow-black/60",
+          "bg-[#09090b] shadow-2xl shadow-black/70",
           isLive
-            ? "border-red-500/25 hover:border-red-500/50 shadow-red-950/20"
-            : "border-white/[0.06] hover:border-white/[0.14]"
+            ? "border-red-500/30 hover:border-red-500/60 shadow-red-950/30"
+            : isFinished
+            ? "border-white/[0.07] hover:border-white/[0.18]"
+            : "border-white/[0.06] hover:border-white/[0.16]"
         )}
       >
         {isLive && (
-          <div className="absolute inset-0 bg-gradient-to-b from-red-950/10 to-transparent pointer-events-none" />
+          <div className="absolute inset-0 bg-gradient-to-br from-red-950/15 via-transparent to-transparent pointer-events-none" />
         )}
 
         {/* League header */}
-        <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06]">
+        <div className="flex items-center justify-between px-4 pt-3.5 pb-3 border-b border-white/[0.06]">
           <div className="flex items-center gap-2 min-w-0">
             {match.league.logo ? (
-              <img src={match.league.logo} alt="" className="w-5 h-5 object-contain flex-shrink-0 opacity-90" />
+              <img
+                src={match.league.logo}
+                alt=""
+                className="w-5 h-5 object-contain flex-shrink-0 opacity-85"
+              />
             ) : (
-              <Globe className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+              <Globe className="w-4 h-4 text-zinc-500 flex-shrink-0" />
             )}
-            <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide truncate">
+            <span className="text-[10.5px] font-semibold text-zinc-400 uppercase tracking-wider truncate">
               {match.league.name}
             </span>
           </div>
+
           <div className="flex-shrink-0 ml-2">
             {isLive ? (
-              <span className="flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full bg-red-500 text-white shadow-lg shadow-red-500/30">
+              <span className="flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full bg-red-500 text-white shadow-lg shadow-red-500/40 ring-1 ring-red-400/30">
                 <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
                 {match.status.elapsed ? `${match.status.elapsed}'` : "LIVE"}
               </span>
             ) : isFinished ? (
-              <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-500/20">
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-500/30 ring-1 ring-emerald-400/30">
                 FT
               </span>
             ) : (
-              <span className="flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-white/[0.07] text-zinc-400">
+              <span className="flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-white/[0.07] text-zinc-400 border border-white/[0.08]">
                 <Clock className="w-3 h-3" />
                 {format(new Date(match.date), "HH:mm")}
               </span>
@@ -96,25 +103,29 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
         </div>
 
         {/* Teams & Score */}
-        <div className="flex items-center justify-between gap-3 px-4 py-5 flex-1">
+        <div className="flex items-center justify-between gap-2 px-4 py-5 flex-1">
           {/* Home team */}
-          <div className="flex flex-col items-center gap-2 flex-1 min-w-0">
+          <div className="flex flex-col items-center gap-2.5 flex-1 min-w-0">
             <div
               className={cn(
-                "w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 border",
-                "bg-white/[0.04] border-white/[0.08]",
-                match.homeTeam.winner === true && "ring-2 ring-primary/50"
+                "w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0",
+                "bg-white/[0.05] border border-white/[0.09]",
+                match.homeTeam.winner === true && "ring-2 ring-primary/60 ring-offset-1 ring-offset-[#09090b]"
               )}
             >
               {match.homeTeam.logo ? (
-                <img src={match.homeTeam.logo} alt="" className="w-9 h-9 object-contain drop-shadow-sm" />
+                <img
+                  src={match.homeTeam.logo}
+                  alt={match.homeTeam.name}
+                  className="w-9 h-9 object-contain drop-shadow"
+                />
               ) : (
                 <Trophy className="w-5 h-5 text-zinc-500" />
               )}
             </div>
             <span
               className={cn(
-                "text-xs font-semibold text-center leading-tight line-clamp-2",
+                "text-[11px] font-semibold text-center leading-tight line-clamp-2 w-full px-1",
                 match.homeTeam.winner === true ? "text-white" : "text-zinc-300"
               )}
             >
@@ -123,57 +134,61 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
           </div>
 
           {/* Score / VS */}
-          <div className="flex flex-col items-center gap-1 flex-shrink-0">
+          <div className="flex flex-col items-center gap-1 flex-shrink-0 px-1">
             {hasScore ? (
-              <div className="flex items-center gap-1">
-                <span
-                  className={cn(
-                    "font-display font-black text-3xl leading-none tabular-nums",
-                    match.homeTeam.winner === true ? "text-white" : "text-zinc-200"
-                  )}
-                >
-                  {match.score.home}
-                </span>
-                <span className="text-zinc-600 font-bold text-xl mx-0.5">:</span>
-                <span
-                  className={cn(
-                    "font-display font-black text-3xl leading-none tabular-nums",
-                    match.awayTeam.winner === true ? "text-white" : "text-zinc-200"
-                  )}
-                >
-                  {match.score.away}
-                </span>
-              </div>
+              <>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "font-display font-black text-[2rem] leading-none tabular-nums",
+                      match.homeTeam.winner === true ? "text-white" : "text-zinc-100"
+                    )}
+                  >
+                    {match.score.home}
+                  </span>
+                  <span className="text-zinc-700 font-bold text-lg">–</span>
+                  <span
+                    className={cn(
+                      "font-display font-black text-[2rem] leading-none tabular-nums",
+                      match.awayTeam.winner === true ? "text-white" : "text-zinc-100"
+                    )}
+                  >
+                    {match.score.away}
+                  </span>
+                </div>
+                {isLive && (
+                  <span className="text-[10px] text-red-400 font-semibold tabular-nums">
+                    {match.status.elapsed ? `${match.status.elapsed}'` : "●"}
+                  </span>
+                )}
+              </>
             ) : (
-              <div className="flex flex-col items-center">
-                <span className="text-zinc-600 font-bold text-sm uppercase tracking-widest">VS</span>
-              </div>
-            )}
-            {isLive && (
-              <span className="text-[10px] text-red-400 font-semibold tabular-nums">
-                {match.status.elapsed ? `${match.status.elapsed}'` : "●"}
-              </span>
+              <span className="text-zinc-600 font-bold text-sm uppercase tracking-widest px-2">VS</span>
             )}
           </div>
 
           {/* Away team */}
-          <div className="flex flex-col items-center gap-2 flex-1 min-w-0">
+          <div className="flex flex-col items-center gap-2.5 flex-1 min-w-0">
             <div
               className={cn(
-                "w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 border",
-                "bg-white/[0.04] border-white/[0.08]",
-                match.awayTeam.winner === true && "ring-2 ring-primary/50"
+                "w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0",
+                "bg-white/[0.05] border border-white/[0.09]",
+                match.awayTeam.winner === true && "ring-2 ring-primary/60 ring-offset-1 ring-offset-[#09090b]"
               )}
             >
               {match.awayTeam.logo ? (
-                <img src={match.awayTeam.logo} alt="" className="w-9 h-9 object-contain drop-shadow-sm" />
+                <img
+                  src={match.awayTeam.logo}
+                  alt={match.awayTeam.name}
+                  className="w-9 h-9 object-contain drop-shadow"
+                />
               ) : (
                 <Trophy className="w-5 h-5 text-zinc-500" />
               )}
             </div>
             <span
               className={cn(
-                "text-xs font-semibold text-center leading-tight line-clamp-2",
+                "text-[11px] font-semibold text-center leading-tight line-clamp-2 w-full px-1",
                 match.awayTeam.winner === true ? "text-white" : "text-zinc-300"
               )}
             >
@@ -184,9 +199,9 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
 
         {/* Footer */}
         {match.league.round && (
-          <div className="px-4 pb-3 pt-0">
+          <div className="px-4 pb-3.5">
             <div className="border-t border-white/[0.05] pt-2.5">
-              <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-medium">
+              <span className="text-[9.5px] text-zinc-600 uppercase tracking-wider font-medium">
                 {match.league.round}
               </span>
             </div>
@@ -273,23 +288,23 @@ export default function Home() {
         </div>
 
         {liveLoading ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[...Array(9)].map((_, i) => (
-              <div key={i} className="bg-[#0d0d0f] rounded-2xl h-44 animate-pulse border border-white/[0.06]" />
+              <div key={i} className="bg-[#09090b] rounded-2xl h-44 animate-pulse border border-white/[0.06]" />
             ))}
           </div>
         ) : liveError ? (
-          <div className="p-8 text-center bg-[#0d0d0f] rounded-2xl border border-destructive/20 text-destructive">
+          <div className="p-8 text-center bg-[#09090b] rounded-2xl border border-destructive/20 text-destructive">
             Failed to load live match data. Please check the API key or try again later.
           </div>
         ) : liveData && liveData.total === 0 ? (
-          <div className="p-12 text-center bg-[#0d0d0f] rounded-2xl border border-white/[0.06] flex flex-col items-center">
+          <div className="p-12 text-center bg-[#09090b] rounded-2xl border border-white/[0.06] flex flex-col items-center">
             <Target className="w-12 h-12 text-muted-foreground mb-4" />
             <h3 className="text-xl font-medium text-white mb-2">No matches scheduled today</h3>
             <p className="text-muted-foreground">Check back later or browse other dates.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {liveData?.matches.slice(0, 30).map((match, idx) => (
               <LiveMatchCard key={match.id} match={match} idx={idx} />
             ))}
