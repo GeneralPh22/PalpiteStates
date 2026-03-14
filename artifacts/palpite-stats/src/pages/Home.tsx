@@ -3,8 +3,17 @@ import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
 import { Link } from "wouter";
-import { Activity, ChevronRight, Clock, Trophy, Target, Globe } from "lucide-react";
+import {
+  Activity,
+  ChevronRight,
+  Clock,
+  Trophy,
+  Target,
+  Globe,
+  RefreshCw,
+} from "lucide-react";
 import { cn, formatProbability, formatOdds } from "@/lib/utils";
+import { MatchInsights } from "@/components/MatchInsights";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -18,8 +27,9 @@ interface LiveMatch {
   score: { home: number | null; away: number | null };
 }
 
+const today = new Date().toISOString().split("T")[0];
+
 function useTodayMatches() {
-  const today = new Date().toISOString().split("T")[0];
   return useQuery<{ total: number; matches: LiveMatch[] }>({
     queryKey: ["matches-today", today],
     queryFn: async () => {
@@ -28,6 +38,7 @@ function useTodayMatches() {
       return res.json();
     },
     staleTime: 2 * 60 * 1000,
+    refetchInterval: 3 * 60 * 1000,
     refetchOnWindowFocus: true,
   });
 }
@@ -48,7 +59,7 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
     <motion.div
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, delay: idx * 0.03 }}
+      transition={{ duration: 0.35, delay: Math.min(idx * 0.03, 0.5) }}
       className="h-full"
     >
       <div
@@ -110,7 +121,8 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
               className={cn(
                 "w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0",
                 "bg-white/[0.05] border border-white/[0.09]",
-                match.homeTeam.winner === true && "ring-2 ring-primary/60 ring-offset-1 ring-offset-[#09090b]"
+                match.homeTeam.winner === true &&
+                  "ring-2 ring-primary/60 ring-offset-1 ring-offset-[#09090b]"
               )}
             >
               {match.homeTeam.logo ? (
@@ -163,7 +175,9 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
                 )}
               </>
             ) : (
-              <span className="text-zinc-600 font-bold text-sm uppercase tracking-widest px-2">VS</span>
+              <span className="text-zinc-600 font-bold text-sm uppercase tracking-widest px-2">
+                VS
+              </span>
             )}
           </div>
 
@@ -173,7 +187,8 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
               className={cn(
                 "w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0",
                 "bg-white/[0.05] border border-white/[0.09]",
-                match.awayTeam.winner === true && "ring-2 ring-primary/60 ring-offset-1 ring-offset-[#09090b]"
+                match.awayTeam.winner === true &&
+                  "ring-2 ring-primary/60 ring-offset-1 ring-offset-[#09090b]"
               )}
             >
               {match.awayTeam.logo ? (
@@ -197,25 +212,45 @@ function LiveMatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
           </div>
         </div>
 
-        {/* Footer */}
+        {/* Round */}
         {match.league.round && (
-          <div className="px-4 pb-3.5">
-            <div className="border-t border-white/[0.05] pt-2.5">
+          <div className="px-4">
+            <div className="border-t border-white/[0.05] pt-2 pb-2">
               <span className="text-[9.5px] text-zinc-600 uppercase tracking-wider font-medium">
                 {match.league.round}
               </span>
             </div>
           </div>
         )}
+
+        {/* Odds & AI Analysis (expandable) */}
+        <MatchInsights
+          fixtureId={match.id}
+          homeTeamId={match.homeTeam.id}
+          awayTeamId={match.awayTeam.id}
+          leagueId={match.league.id}
+          homeTeamName={match.homeTeam.name}
+          awayTeamName={match.awayTeam.name}
+        />
       </div>
     </motion.div>
   );
 }
 
 export default function Home() {
-  const today = format(new Date(), "yyyy-MM-dd");
-  const { data: dbMatches, isLoading: dbLoading, error: dbError } = useGetMatches({ date: today });
-  const { data: liveData, isLoading: liveLoading, error: liveError } = useTodayMatches();
+  const todayFormatted = format(new Date(), "yyyy-MM-dd");
+  const {
+    data: dbMatches,
+    isLoading: dbLoading,
+    error: dbError,
+  } = useGetMatches({ date: todayFormatted });
+  const {
+    data: liveData,
+    isLoading: liveLoading,
+    error: liveError,
+    isFetching: liveFetching,
+    refetch: refetchLive,
+  } = useTodayMatches();
 
   return (
     <div className="pb-24">
@@ -247,7 +282,8 @@ export default function Home() {
               </span>
             </h1>
             <p className="text-lg md:text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-              Advanced algorithms, real-time odds, and per-90 player metrics tailored for smart betting strategies.
+              Advanced algorithms, real-time odds, and per-90 player metrics tailored for smart
+              betting strategies.
             </p>
             <div className="flex items-center justify-center gap-4">
               <Link
@@ -279,18 +315,32 @@ export default function Home() {
               </span>
             )}
           </h2>
-          {liveData && liveData.total > 0 && (
-            <span className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20 font-medium">
-              <Activity className="w-3 h-3 animate-pulse" />
-              Live Data
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {liveData && liveData.total > 0 && (
+              <span className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20 font-medium">
+                <Activity className="w-3 h-3 animate-pulse" />
+                Live Data
+              </span>
+            )}
+            <button
+              onClick={() => refetchLive()}
+              disabled={liveFetching}
+              className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.09] text-zinc-400 hover:text-white border border-white/[0.08] transition-colors disabled:opacity-40"
+              title="Refresh matches"
+            >
+              <RefreshCw className={cn("w-3 h-3", liveFetching && "animate-spin")} />
+              Refresh
+            </button>
+          </div>
         </div>
 
         {liveLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[...Array(9)].map((_, i) => (
-              <div key={i} className="bg-[#09090b] rounded-2xl h-44 animate-pulse border border-white/[0.06]" />
+              <div
+                key={i}
+                className="bg-[#09090b] rounded-2xl h-44 animate-pulse border border-white/[0.06]"
+              />
             ))}
           </div>
         ) : liveError ? (
@@ -313,21 +363,28 @@ export default function Home() {
       </div>
 
       {/* Internal DB Matches Section */}
-      <div className="container mx-auto px-4 md:px-6 mt-16 -mt-0 relative z-20">
+      <div className="container mx-auto px-4 md:px-6 mt-16 relative z-20">
         <div className="flex items-center justify-between mb-6 mt-12">
           <h2 className="text-2xl font-display font-bold flex items-center gap-2">
             <Trophy className="w-6 h-6 text-primary" />
             Featured Predictions
           </h2>
-          <Link href="/matches" className="text-sm font-medium text-primary hover:text-primary/80 flex items-center gap-1 group">
-            View All <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+          <Link
+            href="/matches"
+            className="text-sm font-medium text-primary hover:text-primary/80 flex items-center gap-1 group"
+          >
+            View All{" "}
+            <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </Link>
         </div>
 
         {dbLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[...Array(6)].map((_, i) => (
-              <div key={i} className="bg-card rounded-2xl h-64 animate-pulse border border-white/5" />
+              <div
+                key={i}
+                className="bg-card rounded-2xl h-64 animate-pulse border border-white/5"
+              />
             ))}
           </div>
         ) : dbError ? (
@@ -355,7 +412,9 @@ export default function Home() {
                 >
                   <div className="flex justify-between items-center mb-4 text-sm">
                     <span className="text-muted-foreground font-medium flex items-center gap-1.5">
-                      {match.league?.logoUrl && <img src={match.league.logoUrl} className="w-4 h-4 rounded-full" alt="" />}
+                      {match.league?.logoUrl && (
+                        <img src={match.league.logoUrl} className="w-4 h-4 rounded-full" alt="" />
+                      )}
                       {match.league?.name}
                     </span>
                     <span
@@ -369,7 +428,9 @@ export default function Home() {
                       {match.status === "live" && (
                         <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
                       )}
-                      {match.status === "live" ? "LIVE" : format(new Date(match.kickoffTime), "HH:mm")}
+                      {match.status === "live"
+                        ? "LIVE"
+                        : format(new Date(match.kickoffTime), "HH:mm")}
                     </span>
                   </div>
 
@@ -385,7 +446,9 @@ export default function Home() {
                         </div>
                         <span className="font-semibold text-lg">{match.homeTeam.name}</span>
                       </div>
-                      <span className="font-display font-bold text-xl">{match.homeScore ?? "-"}</span>
+                      <span className="font-display font-bold text-xl">
+                        {match.homeScore ?? "-"}
+                      </span>
                     </div>
                     <div className="flex justify-between items-center">
                       <div className="flex items-center gap-3">
@@ -398,7 +461,9 @@ export default function Home() {
                         </div>
                         <span className="font-semibold text-lg">{match.awayTeam.name}</span>
                       </div>
-                      <span className="font-display font-bold text-xl">{match.awayScore ?? "-"}</span>
+                      <span className="font-display font-bold text-xl">
+                        {match.awayScore ?? "-"}
+                      </span>
                     </div>
                   </div>
 
@@ -409,9 +474,18 @@ export default function Home() {
                       <span>Win {formatProbability(match.awayWinProbability)}</span>
                     </div>
                     <div className="h-2 w-full flex rounded-full overflow-hidden bg-secondary">
-                      <div className="bg-primary transition-all" style={{ width: `${(match.homeWinProbability || 0) * 100}%` }} />
-                      <div className="bg-muted-foreground/40 transition-all" style={{ width: `${(match.drawProbability || 0) * 100}%` }} />
-                      <div className="bg-blue-500 transition-all" style={{ width: `${(match.awayWinProbability || 0) * 100}%` }} />
+                      <div
+                        className="bg-primary transition-all"
+                        style={{ width: `${(match.homeWinProbability || 0) * 100}%` }}
+                      />
+                      <div
+                        className="bg-muted-foreground/40 transition-all"
+                        style={{ width: `${(match.drawProbability || 0) * 100}%` }}
+                      />
+                      <div
+                        className="bg-blue-500 transition-all"
+                        style={{ width: `${(match.awayWinProbability || 0) * 100}%` }}
+                      />
                     </div>
 
                     <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-white/5 text-center">
