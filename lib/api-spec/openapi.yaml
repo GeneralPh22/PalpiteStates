@@ -1,22 +1,30 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: PalpiteStats Football Analytics API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: matches
+    description: Football matches
+  - name: players
+    description: Football players
+  - name: odds
+    description: Betting odds
+  - name: leagues
+    description: Football leagues
+  - name: ai
+    description: AI predictions
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +32,188 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /matches:
+    get:
+      operationId: getMatches
+      tags: [matches]
+      summary: Get matches
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+          description: Filter by date (YYYY-MM-DD). Defaults to today.
+        - name: leagueId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of matches
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Match"
+
+  /matches/{id}:
+    get:
+      operationId: getMatch
+      tags: [matches]
+      summary: Get match details with analysis
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Match details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchDetail"
+        "404":
+          description: Match not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /players:
+    get:
+      operationId: getPlayers
+      tags: [players]
+      summary: Search players
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: teamId
+          in: query
+          schema:
+            type: integer
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: List of players
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Player"
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                required:
+                  - data
+                  - total
+                  - page
+                  - limit
+
+  /players/{id}:
+    get:
+      operationId: getPlayer
+      tags: [players]
+      summary: Get player details with stats
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Player details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerDetail"
+        "404":
+          description: Player not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /odds:
+    get:
+      operationId: getOdds
+      tags: [odds]
+      summary: Get odds for matches
+      parameters:
+        - name: matchId
+          in: query
+          schema:
+            type: integer
+        - name: date
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of odds
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MatchOdds"
+
+  /leagues:
+    get:
+      operationId: getLeagues
+      tags: [leagues]
+      summary: Get all leagues
+      responses:
+        "200":
+          description: List of leagues
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/League"
+
+  /ai/predict:
+    post:
+      operationId: aiPredict
+      tags: [ai]
+      summary: Get AI prediction/answer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiPredictRequest"
+      responses:
+        "200":
+          description: AI prediction response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiPredictResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +224,335 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    League:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        country:
+          type: string
+        logoUrl:
+          type: string
+          nullable: true
+      required:
+        - id
+        - name
+        - country
+
+    Team:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        shortName:
+          type: string
+          nullable: true
+        logoUrl:
+          type: string
+          nullable: true
+        leagueId:
+          type: integer
+          nullable: true
+      required:
+        - id
+        - name
+
+    Match:
+      type: object
+      properties:
+        id:
+          type: integer
+        homeTeam:
+          $ref: "#/components/schemas/Team"
+        awayTeam:
+          $ref: "#/components/schemas/Team"
+        league:
+          $ref: "#/components/schemas/League"
+        kickoffTime:
+          type: string
+        status:
+          type: string
+          enum: [scheduled, live, finished, postponed]
+        homeScore:
+          type: integer
+          nullable: true
+        awayScore:
+          type: integer
+          nullable: true
+        homeWinProbability:
+          type: number
+          nullable: true
+        drawProbability:
+          type: number
+          nullable: true
+        awayWinProbability:
+          type: number
+          nullable: true
+        homeOdds:
+          type: number
+          nullable: true
+        drawOdds:
+          type: number
+          nullable: true
+        awayOdds:
+          type: number
+          nullable: true
+      required:
+        - id
+        - homeTeam
+        - awayTeam
+        - league
+        - kickoffTime
+        - status
+
+    MatchAnalysis:
+      type: object
+      properties:
+        homeOffensiveAvg:
+          type: number
+        homeDefensiveAvg:
+          type: number
+        awayOffensiveAvg:
+          type: number
+        awayDefensiveAvg:
+          type: number
+        homeRecentForm:
+          type: string
+          description: "Last 5 results e.g. WWDLW"
+        awayRecentForm:
+          type: string
+        over25Probability:
+          type: number
+        bttsProbalility:
+          type: number
+        expectedGoals:
+          type: number
+      required:
+        - homeOffensiveAvg
+        - homeDefensiveAvg
+        - awayOffensiveAvg
+        - awayDefensiveAvg
+        - homeRecentForm
+        - awayRecentForm
+        - over25Probability
+        - bttsProbalility
+        - expectedGoals
+
+    MatchDetail:
+      allOf:
+        - $ref: "#/components/schemas/Match"
+        - type: object
+          properties:
+            analysis:
+              $ref: "#/components/schemas/MatchAnalysis"
+          required:
+            - analysis
+
+    PlayerStats:
+      type: object
+      properties:
+        matchesPlayed:
+          type: integer
+        goals:
+          type: integer
+        assists:
+          type: integer
+        shotsOnTarget:
+          type: integer
+        totalShots:
+          type: integer
+        foulsCommitted:
+          type: integer
+        foulsSuffered:
+          type: integer
+        tackles:
+          type: integer
+        yellowCards:
+          type: integer
+        redCards:
+          type: integer
+        goalsPer90:
+          type: number
+        assistsPer90:
+          type: number
+        shotsOnTargetPer90:
+          type: number
+        totalShotsPer90:
+          type: number
+        tacklesPer90:
+          type: number
+      required:
+        - matchesPlayed
+        - goals
+        - assists
+        - shotsOnTarget
+        - totalShots
+        - foulsCommitted
+        - foulsSuffered
+        - tackles
+        - yellowCards
+        - redCards
+        - goalsPer90
+        - assistsPer90
+        - shotsOnTargetPer90
+        - totalShotsPer90
+        - tacklesPer90
+
+    RecentMatch:
+      type: object
+      properties:
+        matchId:
+          type: integer
+        date:
+          type: string
+        opponent:
+          type: string
+        result:
+          type: string
+        goals:
+          type: integer
+        assists:
+          type: integer
+        shotsOnTarget:
+          type: integer
+        minutes:
+          type: integer
+      required:
+        - matchId
+        - date
+        - opponent
+        - result
+        - goals
+        - assists
+        - shotsOnTarget
+        - minutes
+
+    Player:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        position:
+          type: string
+          nullable: true
+        nationality:
+          type: string
+          nullable: true
+        age:
+          type: integer
+          nullable: true
+        photoUrl:
+          type: string
+          nullable: true
+        team:
+          $ref: "#/components/schemas/Team"
+      required:
+        - id
+        - name
+        - team
+
+    PlayerDetail:
+      allOf:
+        - $ref: "#/components/schemas/Player"
+        - type: object
+          properties:
+            stats:
+              $ref: "#/components/schemas/PlayerStats"
+            recentMatches:
+              type: array
+              items:
+                $ref: "#/components/schemas/RecentMatch"
+          required:
+            - stats
+            - recentMatches
+
+    OddsEntry:
+      type: object
+      properties:
+        bookmaker:
+          type: string
+        homeWin:
+          type: number
+        draw:
+          type: number
+        awayWin:
+          type: number
+        over25:
+          type: number
+        under25:
+          type: number
+        bttsYes:
+          type: number
+        bttsNo:
+          type: number
+      required:
+        - bookmaker
+        - homeWin
+        - draw
+        - awayWin
+        - over25
+        - under25
+        - bttsYes
+        - bttsNo
+
+    MatchOdds:
+      type: object
+      properties:
+        matchId:
+          type: integer
+        match:
+          $ref: "#/components/schemas/Match"
+        odds:
+          type: array
+          items:
+            $ref: "#/components/schemas/OddsEntry"
+      required:
+        - matchId
+        - match
+        - odds
+
+    AiPredictRequest:
+      type: object
+      properties:
+        question:
+          type: string
+        context:
+          type: object
+          properties:
+            matchId:
+              type: integer
+              nullable: true
+            playerId:
+              type: integer
+              nullable: true
+      required:
+        - question
+
+    AiPredictResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        confidence:
+          type: number
+          nullable: true
+        dataPoints:
+          type: array
+          items:
+            type: string
+      required:
+        - answer

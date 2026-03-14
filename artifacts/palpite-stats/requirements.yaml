@@ -1,0 +1,11 @@
+packages:
+  "framer-motion": "For page transitions and premium micro-interactions"
+  "recharts": "For player performance and statistics charts"
+  "date-fns": "For formatting kickoff times and dates"
+  "clsx": "Utility for constructing className strings conditionally"
+  "tailwind-merge": "Utility for merging Tailwind classes"
+
+images:
+  - path: "artifacts/palpite-stats/public/images/hero-bg.png"
+    description: "Abstract premium dark mesh background in deep black (#0f0f0f) with subtle neon green edge lighting, sports betting aesthetic, out of focus"
+    aspect_ratio: "16:9"
