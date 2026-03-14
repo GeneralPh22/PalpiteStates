@@ -221,7 +221,7 @@ export default function Home() {
             Today's Matches
             {liveData && (
               <span className="ml-2 text-sm font-normal text-muted-foreground">
-                ({liveData.total} matches)
+                ({Math.min(30, liveData.matches.length)} of {liveData.total})
               </span>
             )}
           </h2>
@@ -251,7 +251,7 @@ export default function Home() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {liveData?.matches.map((match, idx) => (
+            {liveData?.matches.slice(0, 30).map((match, idx) => (
               <LiveMatchCard key={match.id} match={match} idx={idx} />
             ))}
           </div>
