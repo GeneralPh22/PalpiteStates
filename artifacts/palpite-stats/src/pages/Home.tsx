@@ -19,14 +19,16 @@ interface LiveMatch {
 }
 
 function useTodayMatches() {
+  const today = new Date().toISOString().split("T")[0];
   return useQuery<{ total: number; matches: LiveMatch[] }>({
-    queryKey: ["matches-today"],
+    queryKey: ["matches-today", today],
     queryFn: async () => {
       const res = await fetch(`${BASE}/api/matches-today`);
       if (!res.ok) throw new Error("Failed to fetch matches");
       return res.json();
     },
     staleTime: 2 * 60 * 1000,
+    refetchOnWindowFocus: true,
   });
 }
 
