@@ -57,6 +57,7 @@ artifacts-monorepo/
 
 ## API Endpoints
 
+### Internal (PostgreSQL / Drizzle)
 - `GET /api/matches?date=YYYY-MM-DD` — Today's/date matches
 - `GET /api/matches/:id` — Match detail + analysis
 - `GET /api/players?search=&page=&limit=` — Player search
@@ -64,6 +65,11 @@ artifacts-monorepo/
 - `GET /api/odds?date=YYYY-MM-DD&matchId=` — Bookmaker odds
 - `GET /api/leagues` — All leagues
 - `POST /api/ai/predict` — AI prediction (body: {question, context?})
+
+### API-Football (Live data via `API_FOOTBALL_KEY`)
+- `GET /api/matches-today` — All fixtures scheduled for today (live + finished + upcoming)
+- `GET /api/player-stats?id=&season=` — Player profile and season statistics
+- `GET /api/team-stats?team=&league=&season=` — Team statistics for a given league season
 
 ## TypeScript & Composite Projects
 

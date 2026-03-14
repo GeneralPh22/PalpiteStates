@@ -5,6 +5,7 @@ import playersRouter from "./players";
 import oddsRouter from "./odds";
 import leaguesRouter from "./leagues";
 import aiRouter from "./ai";
+import footballApiRouter from "./football-api";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(playersRouter);
 router.use(oddsRouter);
 router.use(leaguesRouter);
 router.use(aiRouter);
+router.use(footballApiRouter);
 
 export default router;
