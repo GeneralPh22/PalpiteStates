@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn, formatProbability, formatOdds } from "@/lib/utils";
 import { MatchInsights } from "@/components/MatchInsights";
+import { sortMatchesByLeague } from "@/lib/leaguePriority";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -311,7 +312,7 @@ export default function Home() {
             Today's Matches
             {liveData && (
               <span className="ml-2 text-sm font-normal text-muted-foreground">
-                ({Math.min(30, liveData.matches.length)} of {liveData.total})
+                ({liveData.matches.length} jogos)
               </span>
             )}
           </h2>
@@ -355,7 +356,7 @@ export default function Home() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {liveData?.matches.slice(0, 30).map((match, idx) => (
+            {sortMatchesByLeague(liveData?.matches ?? []).map((match, idx) => (
               <LiveMatchCard key={match.id} match={match} idx={idx} />
             ))}
           </div>

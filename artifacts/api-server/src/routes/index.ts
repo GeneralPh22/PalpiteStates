@@ -6,10 +6,12 @@ import oddsRouter from "./odds";
 import leaguesRouter from "./leagues";
 import aiRouter from "./ai";
 import footballApiRouter from "./football-api";
+import authRouter from "./auth";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(authRouter);
 router.use(matchesRouter);
 router.use(playersRouter);
 router.use(oddsRouter);

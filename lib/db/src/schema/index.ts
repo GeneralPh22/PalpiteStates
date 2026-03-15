@@ -4,3 +4,4 @@ export * from "./matches";
 export * from "./players";
 export * from "./playerStats";
 export * from "./odds";
+export * from "./users";

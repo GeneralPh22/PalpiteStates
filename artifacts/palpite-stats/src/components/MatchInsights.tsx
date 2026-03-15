@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { TrendingUp, ChevronDown, ChevronUp, Loader2, AlertCircle } from "lucide-react";
+import { TrendingUp, ChevronDown, ChevronUp, Loader2, AlertCircle, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
+import { Link } from "wouter";
+import { useAuth } from "@/contexts/AuthContext";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -133,6 +135,23 @@ function FormDots({ form }: { form: string | null | undefined }) {
   );
 }
 
+function UpgradeBanner() {
+  return (
+    <div className="flex flex-col items-center gap-2 py-4 px-3 bg-white/[0.02] rounded-xl border border-white/[0.06]">
+      <Lock className="w-4 h-4 text-zinc-600" />
+      <p className="text-[10px] text-zinc-600 text-center leading-relaxed">
+        Análise completa disponível em planos premium
+      </p>
+      <Link
+        href="/pricing"
+        className="text-[10px] text-primary font-semibold hover:underline"
+      >
+        Ver planos →
+      </Link>
+    </div>
+  );
+}
+
 interface Props {
   fixtureId: number;
   homeTeamId: number;
@@ -151,6 +170,8 @@ export function MatchInsights({
   awayTeamName,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const { accessLevel } = useAuth();
+  const isLimited = accessLevel === "limited";
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -192,7 +213,8 @@ export function MatchInsights({
       >
         <span className="flex items-center gap-1.5">
           <TrendingUp className="w-3 h-3 text-primary/70 group-hover:text-primary transition-colors" />
-          Odds & AI Analysis
+          Odds & Análise IA
+          {isLimited && <Lock className="w-2.5 h-2.5 text-zinc-600" />}
         </span>
         {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
       </button>
@@ -202,47 +224,58 @@ export function MatchInsights({
           {isLoading ? (
             <div className="flex items-center justify-center py-6 gap-2 text-zinc-600 text-xs">
               <Loader2 className="w-4 h-4 animate-spin" />
-              Loading analysis...
+              Carregando análise...
             </div>
           ) : (oddsQuery.isError && analysisQuery.isError) ? (
             <div className="flex items-center gap-2 text-red-400/70 text-xs py-3">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              Could not load data for this fixture.
+              Não foi possível carregar dados deste jogo.
             </div>
           ) : (
             <>
+              {/* Odds — basic shown always, full shown for non-limited */}
               {odds && (
                 <div className="space-y-2">
                   <span className="text-[9.5px] text-zinc-600 uppercase tracking-widest font-semibold">
-                    Live Odds
+                    Odds ao Vivo
                     {oddsData?.bookmakers?.length
                       ? ` · ${oddsData.bookmakers.slice(0, 2).join(", ")}`
                       : ""}
                   </span>
                   <div className="grid grid-cols-3 gap-1.5">
-                    <OddPill label="1 Home" value={odds.home} highlight />
-                    <OddPill label="X Draw" value={odds.draw} />
-                    <OddPill label="2 Away" value={odds.away} highlight={false} />
+                    <OddPill label="1 Casa" value={odds.home} highlight />
+                    <OddPill label="X Empate" value={odds.draw} />
+                    <OddPill label="2 Fora" value={odds.away} highlight={false} />
                   </div>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    <OddPill label="O 2.5" value={odds.over25} />
-                    <OddPill label="U 2.5" value={odds.under25} />
-                    <OddPill label="BTTS" value={odds.bttsYes} />
-                  </div>
+                  {!isLimited && (
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <OddPill label="O 2.5" value={odds.over25} />
+                      <OddPill label="U 2.5" value={odds.under25} />
+                      <OddPill label="BTTS" value={odds.bttsYes} />
+                    </div>
+                  )}
+                  {isLimited && (
+                    <div className="grid grid-cols-3 gap-1.5 opacity-40 blur-[2px] pointer-events-none select-none">
+                      <OddPill label="O 2.5" value={null} />
+                      <OddPill label="U 2.5" value={null} />
+                      <OddPill label="BTTS" value={null} />
+                    </div>
+                  )}
                 </div>
               )}
 
               {!oddsData?.available && !oddsQuery.isLoading && (
                 <p className="text-[10px] text-zinc-700 italic">
-                  Odds not yet available for this fixture.
+                  Odds ainda não disponíveis para este jogo.
                 </p>
               )}
 
-              {analysis && (
+              {/* AI Analysis */}
+              {analysis && !isLimited && (
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between">
                     <span className="text-[9.5px] text-zinc-600 uppercase tracking-widest font-semibold">
-                      AI Probability Analysis
+                      Probabilidades IA
                     </span>
                     <span className="text-[9.5px] text-zinc-700 font-medium">
                       xG {analysis.expectedGoals}
@@ -250,21 +283,9 @@ export function MatchInsights({
                   </div>
 
                   <div className="space-y-2">
-                    <ProbBar
-                      label={`${homeTeamName} Win`}
-                      value={analysis.probabilities.homeWin}
-                      color="bg-primary"
-                    />
-                    <ProbBar
-                      label="Draw"
-                      value={analysis.probabilities.draw}
-                      color="bg-zinc-500"
-                    />
-                    <ProbBar
-                      label={`${awayTeamName} Win`}
-                      value={analysis.probabilities.awayWin}
-                      color="bg-blue-500"
-                    />
+                    <ProbBar label={`${homeTeamName} vence`} value={analysis.probabilities.homeWin} color="bg-primary" />
+                    <ProbBar label="Empate" value={analysis.probabilities.draw} color="bg-zinc-500" />
+                    <ProbBar label={`${awayTeamName} vence`} value={analysis.probabilities.awayWin} color="bg-blue-500" />
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/[0.04]">
@@ -276,17 +297,8 @@ export function MatchInsights({
                           : "bg-white/[0.03] border-white/[0.06]"
                       )}
                     >
-                      <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">
-                        Over 2.5 Goals
-                      </div>
-                      <div
-                        className={cn(
-                          "text-base font-black tabular-nums",
-                          analysis.probabilities.over25 >= 0.5
-                            ? "text-amber-400"
-                            : "text-zinc-300"
-                        )}
-                      >
+                      <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Mais de 2.5</div>
+                      <div className={cn("text-base font-black tabular-nums", analysis.probabilities.over25 >= 0.5 ? "text-amber-400" : "text-zinc-300")}>
                         {Math.round(analysis.probabilities.over25 * 100)}%
                       </div>
                     </div>
@@ -298,32 +310,19 @@ export function MatchInsights({
                           : "bg-white/[0.03] border-white/[0.06]"
                       )}
                     >
-                      <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">
-                        Ambas Marcam
-                      </div>
-                      <div
-                        className={cn(
-                          "text-base font-black tabular-nums",
-                          analysis.probabilities.btts >= 0.5
-                            ? "text-emerald-400"
-                            : "text-zinc-300"
-                        )}
-                      >
+                      <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Ambas Marcam</div>
+                      <div className={cn("text-base font-black tabular-nums", analysis.probabilities.btts >= 0.5 ? "text-emerald-400" : "text-zinc-300")}>
                         {Math.round(analysis.probabilities.btts * 100)}%
                       </div>
                     </div>
                     <div className="rounded-lg p-2.5 border bg-white/[0.03] border-white/[0.06] text-center">
-                      <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">
-                        Gol Jogador
-                      </div>
+                      <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Gol Jogador</div>
                       <div className="text-base font-black tabular-nums text-zinc-300">
                         {Math.round(analysis.probabilities.playerGoal * 100)}%
                       </div>
                     </div>
                     <div className="rounded-lg p-2.5 border bg-white/[0.03] border-white/[0.06] text-center">
-                      <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">
-                        Escanteios +9
-                      </div>
+                      <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Escanteios +9</div>
                       <div className="text-base font-black tabular-nums text-zinc-300">
                         {Math.round(analysis.probabilities.cornerOver9 * 100)}%
                       </div>
@@ -332,37 +331,41 @@ export function MatchInsights({
 
                   {(analysis.homeStats || analysis.awayStats) && (
                     <div className="pt-1 border-t border-white/[0.04] space-y-2">
-                      <span className="text-[9.5px] text-zinc-600 uppercase tracking-widest font-semibold">
-                        Season Form
-                      </span>
+                      <span className="text-[9.5px] text-zinc-600 uppercase tracking-widest font-semibold">Forma da Temporada</span>
                       <div className="grid grid-cols-2 gap-2">
                         {analysis.homeStats && (
                           <div className="space-y-1">
-                            <div className="text-[10px] text-zinc-500 font-medium truncate">
-                              {homeTeamName}
-                            </div>
+                            <div className="text-[10px] text-zinc-500 font-medium truncate">{homeTeamName}</div>
                             <FormDots form={analysis.homeStats.form} />
                             <div className="text-[9px] text-zinc-700">
-                              {analysis.homeStats.wins}W {analysis.homeStats.draws}D{" "}
-                              {analysis.homeStats.losses}L · {analysis.homeStats.goalsFor} gf
+                              {analysis.homeStats.wins}V {analysis.homeStats.draws}E {analysis.homeStats.losses}D · {analysis.homeStats.goalsFor} gols
                             </div>
                           </div>
                         )}
                         {analysis.awayStats && (
                           <div className="space-y-1">
-                            <div className="text-[10px] text-zinc-500 font-medium truncate">
-                              {awayTeamName}
-                            </div>
+                            <div className="text-[10px] text-zinc-500 font-medium truncate">{awayTeamName}</div>
                             <FormDots form={analysis.awayStats.form} />
                             <div className="text-[9px] text-zinc-700">
-                              {analysis.awayStats.wins}W {analysis.awayStats.draws}D{" "}
-                              {analysis.awayStats.losses}L · {analysis.awayStats.goalsFor} gf
+                              {analysis.awayStats.wins}V {analysis.awayStats.draws}E {analysis.awayStats.losses}D · {analysis.awayStats.goalsFor} gols
                             </div>
                           </div>
                         )}
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Limited users see a teaser + upgrade prompt for AI */}
+              {analysis && isLimited && (
+                <div className="space-y-2.5">
+                  <span className="text-[9.5px] text-zinc-600 uppercase tracking-widest font-semibold">Probabilidades IA</span>
+                  <div className="space-y-2 opacity-40 blur-[3px] pointer-events-none select-none">
+                    <ProbBar label={`${homeTeamName} vence`} value={analysis.probabilities.homeWin} color="bg-primary" />
+                    <ProbBar label="Empate" value={analysis.probabilities.draw} color="bg-zinc-500" />
+                  </div>
+                  <UpgradeBanner />
                 </div>
               )}
             </>
