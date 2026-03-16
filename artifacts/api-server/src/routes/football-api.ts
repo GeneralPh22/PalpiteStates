@@ -17,14 +17,13 @@ let lastSuspendedCheck = 0;
 
 const LIVE_TTL = 30 * 1000;            // 30 seconds (for live matches)
 
+// ── Core fetch: used for fixture/match data — manages global suspension flag ───
 async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok: boolean; stale?: boolean }> {
   const cacheKey = path;
   const cached = cache.get(cacheKey);
 
-  // Serve fresh cache immediately if valid
   if (cached && Date.now() - cached.ts < ttl) return { data: cached.data, ok: true };
 
-  // If suspended, serve stale cache or fail
   if (apiSuspended && Date.now() - lastSuspendedCheck < SUSPENDED_CACHE_TTL) {
     if (cached) return { data: cached.data, ok: true, stale: true };
     return { data: null, ok: false };
@@ -32,7 +31,7 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
 
   const apiKey = process.env.API_FOOTBALL_KEY;
   if (!apiKey) {
-    console.error("[api-football] ERROR: API_FOOTBALL_KEY environment variable is not set.");
+    console.error("[api-football] ERROR: API_FOOTBALL_KEY not set.");
     if (cached) return { data: cached.data, ok: true, stale: true };
     return { data: null, ok: false };
   }
@@ -56,11 +55,12 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
     if (data.errors && Object.keys(data.errors).length > 0) {
       const errMsg = JSON.stringify(data.errors);
       const isSuspended = errMsg.toLowerCase().includes("suspend") || errMsg.toLowerCase().includes("access");
-      const isRateLimit = errMsg.toLowerCase().includes("ratelimit") || errMsg.toLowerCase().includes("too many");
+      const isRateLimit  = errMsg.toLowerCase().includes("ratelimit") || errMsg.toLowerCase().includes("too many");
       if (isSuspended || isRateLimit) {
         apiSuspended = true;
         lastSuspendedCheck = Date.now();
         if (isSuspended) console.warn(`[api-football] Account suspended.`);
+        else              console.warn(`[api-football] Rate limit hit.`);
       }
       if (cached) return { data: cached.data, ok: true, stale: true };
       return { data: null, ok: false };
@@ -73,6 +73,62 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
   } catch (err: any) {
     console.error(`[api-football] fetch error for ${path}:`, err.message);
     if (cached) return { data: cached.data, ok: true, stale: true };
+    return { data: null, ok: false };
+  }
+}
+
+// ── Non-blocking player fetch: NEVER touches apiSuspended — match loading is safe
+async function apiFetchPlayer(path: string, ttl = FORM_TTL): Promise<{ data: any; ok: boolean }> {
+  const cacheKey = path;
+  const cached = cache.get(cacheKey);
+
+  // Fresh cache — return immediately
+  if (cached && Date.now() - cached.ts < ttl) return { data: cached.data, ok: true };
+
+  // Stale cache — return stale rather than making a risky call while quota is low
+  if (apiSuspended && cached) {
+    console.warn(`[player-stats] Suspended — serving stale cache for ${path}`);
+    return { data: cached.data, ok: true };
+  }
+  if (apiSuspended) return { data: null, ok: false };
+
+  const apiKey = process.env.API_FOOTBALL_KEY;
+  if (!apiKey) return { data: null, ok: false };
+
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: "GET",
+      headers: {
+        "x-apisports-key": apiKey,
+        "x-rapidapi-host": "v3.football.api-sports.io",
+      },
+      signal: AbortSignal.timeout(3000), // 3-second hard timeout
+    });
+
+    if (!res.ok) {
+      console.warn(`[player-stats] HTTP ${res.status} for ${path} — skipping, match loading unaffected`);
+      if (cached) return { data: cached.data, ok: true };
+      return { data: null, ok: false };
+    }
+
+    const data = await res.json();
+
+    if (data.errors && Object.keys(data.errors).length > 0) {
+      // Log but NEVER set apiSuspended — only core match calls may do that
+      console.warn(`[player-stats] API error for ${path}: ${JSON.stringify(data.errors)}`);
+      if (cached) return { data: cached.data, ok: true };
+      return { data: null, ok: false };
+    }
+
+    cache.set(cacheKey, { data, ts: Date.now() });
+    return { data, ok: true };
+  } catch (err: any) {
+    if (err.name === "TimeoutError") {
+      console.warn(`[player-stats] Timed out after 3 s for ${path} — match loading unaffected`);
+    } else {
+      console.warn(`[player-stats] Fetch error for ${path}:`, err.message);
+    }
+    if (cached) return { data: cached.data, ok: true };
     return { data: null, ok: false };
   }
 }
@@ -619,12 +675,19 @@ router.get("/fixture/:id/squad", async (req, res) => {
     // Determine active season (try current year's start; European 2025-26 = season 2025)
     const season = new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1;
 
-    // Fetch squads (24h) + season stats (6h) for both teams in parallel
+    // Early-exit if API is suspended — preserve quota for match loading
+    if (apiSuspended && Date.now() - lastSuspendedCheck < SUSPENDED_CACHE_TTL) {
+      console.warn("[player-stats] Skipping squad fetch — API suspended, protecting match quota");
+      return res.json({ available: false, teams: [] });
+    }
+
+    // Use apiFetchPlayer (non-blocking, 3 s timeout) for all player calls
+    // so a failure NEVER sets apiSuspended and NEVER blocks fixture loading
     const [homeSquadRes, awaySquadRes, homeStatsRes, awayStatsRes] = await Promise.all([
-      apiFetch(`/players/squads?team=${homeId}`, SQUAD_TTL),
-      apiFetch(`/players/squads?team=${awayId}`, SQUAD_TTL),
-      apiFetch(`/players?team=${homeId}&season=${season}`, FORM_TTL),
-      apiFetch(`/players?team=${awayId}&season=${season}`, FORM_TTL),
+      apiFetchPlayer(`/players/squads?team=${homeId}`, SQUAD_TTL),
+      apiFetchPlayer(`/players/squads?team=${awayId}`, SQUAD_TTL),
+      apiFetchPlayer(`/players?team=${homeId}&season=${season}`, FORM_TTL),
+      apiFetchPlayer(`/players?team=${awayId}&season=${season}`, FORM_TTL),
     ]);
 
     const positionOrder = (pos: string): number => {

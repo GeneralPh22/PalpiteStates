@@ -1180,7 +1180,8 @@ function TabPlayers({ data }: { data: PlayersData | undefined }) {
     return (
       <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
         <Loader2 className="w-8 h-8 text-zinc-700 mx-auto mb-3 animate-spin" />
-        <p className="text-zinc-500 text-sm font-medium">Loading squad data...</p>
+        <p className="text-zinc-500 text-sm font-medium">Loading player statistics...</p>
+        <p className="text-zinc-600 text-xs mt-1">Match data has already loaded independently.</p>
       </div>
     );
   }
@@ -1189,8 +1190,8 @@ function TabPlayers({ data }: { data: PlayersData | undefined }) {
     return (
       <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
         <Users className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
-        <p className="text-zinc-500 text-sm font-medium">Player performance data updating.</p>
-        <p className="text-zinc-700 text-xs mt-1">Squad information will be available shortly.</p>
+        <p className="text-zinc-500 text-sm font-medium">Player statistics temporarily unavailable.</p>
+        <p className="text-zinc-700 text-xs mt-1">Data will appear when the squad is loaded. Match results are unaffected.</p>
       </div>
     );
   }
@@ -1349,16 +1350,20 @@ export default function FixtureDetail() {
     queryKey: ["fixture-squad", id],
     queryFn: async () => {
       try {
-        const res = await fetch(`${BASE}/api/fixture/${id}/squad`);
+        const res = await fetch(`${BASE}/api/fixture/${id}/squad`, {
+          signal: AbortSignal.timeout(10_000), // 10 s — never blocks match UI
+        });
         if (!res.ok) return { available: false, teams: [] };
-        return res.json();
+        const json = await res.json();
+        return json;
       } catch {
         return { available: false, teams: [] };
       }
     },
     enabled: activeTab === "players" && !!fixture,
-    staleTime: 24 * 60 * 60 * 1000,
-    gcTime: 25 * 60 * 60 * 1000,
+    staleTime: 6 * 60 * 60 * 1000,   // 6 h — match backend cache
+    gcTime:   25 * 60 * 60 * 1000,
+    retry: 0,                          // never retry — protect API quota
   });
 
   if (fixtureLoading) {
