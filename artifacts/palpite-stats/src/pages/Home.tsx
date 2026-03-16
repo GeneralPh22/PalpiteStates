@@ -51,6 +51,8 @@ interface LeagueGroup {
 
 const today = new Date().toISOString().split("T")[0];
 
+const LIVE_STATUSES = new Set(["1H", "2H", "ET", "HT", "P", "BT"]);
+
 function useTodayMatches() {
   return useQuery<TodayMatchesResponse>({
     queryKey: ["matches-today", today],
@@ -67,13 +69,14 @@ function useTodayMatches() {
       });
       return data;
     },
-    staleTime: 5 * 60 * 1000,          // 5 minutes – matches backend FIXTURE_LIST_TTL
+    staleTime: 60 * 1000,               // 1 minute – allows frequent live refresh
     gcTime: 15 * 60 * 1000,
     refetchInterval: (query) => {
       if (query.state.status === "error") return 15 * 1000;
-      // Retry every 10 seconds when no matches are available (quota reset / API recovering)
-      if ((query.state.data as any)?.total === 0) return 10 * 1000;
-      return 5 * 60 * 1000; // 5 minutes once we have match data
+      const d = query.state.data as TodayMatchesResponse | undefined;
+      if (!d || d.total === 0) return 10 * 1000;       // 10s retry when empty
+      const hasLive = d.matches.some(m => LIVE_STATUSES.has(m.status.short));
+      return hasLive ? 60 * 1000 : 5 * 60 * 1000;     // 60s live / 5min otherwise
     },
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
@@ -84,7 +87,7 @@ function useTodayMatches() {
 }
 
 function isLiveStatus(short: string) {
-  return ["1H", "2H", "ET", "HT", "P"].includes(short);
+  return LIVE_STATUSES.has(short);
 }
 function isFinishedStatus(short: string) {
   return ["FT", "AET", "PEN"].includes(short);
@@ -306,6 +309,22 @@ function SectionDivider({ icon, label, count }: { icon: React.ReactNode; label: 
 }
 
 const ALL_LEAGUES = "all";
+const ALL_DATES   = "all";
+
+/** Returns YYYY-MM-DD for a match */
+function matchDay(m: LiveMatch) {
+  return m.date.slice(0, 10);
+}
+
+/** Readable label for a date string (YYYY-MM-DD) relative to today */
+function dateLabel(d: string): string {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const diff = Math.round((new Date(d).getTime() - new Date(todayStr).getTime()) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  return format(new Date(d + "T12:00:00"), "EEE d MMM");
+}
 
 export default function Home() {
   const todayFormatted = format(new Date(), "yyyy-MM-dd");
@@ -323,28 +342,50 @@ export default function Home() {
   const isUpcoming  = liveData?.isUpcoming === true;
   const apiStatus   = liveData?.apiStatus  ?? "";
 
-  // Build unique league list for the filter (preserve priority order)
+  // ── Filter state ────────────────────────────────────────────────────────
+  const [selectedLeague, setSelectedLeague] = useState<number | typeof ALL_LEAGUES>(ALL_LEAGUES);
+  const [selectedDate, setSelectedDate]     = useState<string | typeof ALL_DATES>(ALL_DATES);
+  const [liveOnly, setLiveOnly]             = useState(false);
+
+  // Unique dates present in the data
+  const availableDates = useMemo(() => {
+    const seen = new Set<string>();
+    allMatches.forEach(m => seen.add(matchDay(m)));
+    return Array.from(seen).sort();
+  }, [allMatches]);
+
+  // Unique leagues after date filter
   const leagues = useMemo(() => {
+    const base = selectedDate === ALL_DATES ? allMatches : allMatches.filter(m => matchDay(m) === selectedDate);
     const seen = new Map<number, LiveMatch["league"]>();
-    sortMatchesByLeague(allMatches).forEach(m => {
+    sortMatchesByLeague(base).forEach(m => {
       if (!seen.has(m.league.id)) seen.set(m.league.id, m.league);
     });
     return Array.from(seen.values());
-  }, [allMatches]);
+  }, [allMatches, selectedDate]);
 
-  const [selectedLeague, setSelectedLeague] = useState<number | typeof ALL_LEAGUES>(ALL_LEAGUES);
-
-  // Reset filter if selected league no longer in the list
+  // Reset league filter if it disappears from new data
   useMemo(() => {
     if (selectedLeague !== ALL_LEAGUES && !leagues.some(l => l.id === selectedLeague)) {
       setSelectedLeague(ALL_LEAGUES);
     }
   }, [leagues, selectedLeague]);
 
-  const filtered = useMemo(
-    () => (selectedLeague === ALL_LEAGUES ? allMatches : allMatches.filter(m => m.league.id === selectedLeague)),
-    [allMatches, selectedLeague]
-  );
+  // Reset date if it disappears
+  useMemo(() => {
+    if (selectedDate !== ALL_DATES && !availableDates.includes(selectedDate)) {
+      setSelectedDate(ALL_DATES);
+    }
+  }, [availableDates, selectedDate]);
+
+  // Apply all three filters
+  const filtered = useMemo(() => {
+    let m = allMatches;
+    if (selectedDate !== ALL_DATES) m = m.filter(x => matchDay(x) === selectedDate);
+    if (selectedLeague !== ALL_LEAGUES) m = m.filter(x => x.league.id === selectedLeague);
+    if (liveOnly) m = m.filter(x => isLiveStatus(x.status.short));
+    return m;
+  }, [allMatches, selectedDate, selectedLeague, liveOnly]);
 
   const liveMatches = useMemo(() => sortMatchesByLeague(filtered.filter(m => isLiveStatus(m.status.short))), [filtered]);
   const upcomingMatches = useMemo(() => sortMatchesByLeague(filtered.filter(m => !isLiveStatus(m.status.short) && !isFinishedStatus(m.status.short))), [filtered]);
@@ -446,40 +487,96 @@ export default function Home() {
           </button>
         </div>
 
-        {/* League filter */}
-        {leagues.length > 1 && (
-          <div className="flex items-center gap-2 mb-5 overflow-x-auto pb-1 scrollbar-none">
-            <Filter className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
+        {/* ── Date tabs ── */}
+        {availableDates.length > 1 && (
+          <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1 scrollbar-none">
             <button
-              onClick={() => setSelectedLeague(ALL_LEAGUES)}
+              onClick={() => setSelectedDate(ALL_DATES)}
               className={cn(
-                "flex-shrink-0 text-xs font-semibold px-3 py-1 rounded-full border transition-colors whitespace-nowrap",
-                selectedLeague === ALL_LEAGUES
+                "flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors whitespace-nowrap",
+                selectedDate === ALL_DATES
                   ? "bg-primary/20 text-primary border-primary/40"
-                  : "bg-white/[0.04] text-zinc-500 border-white/[0.08] hover:text-zinc-300 hover:border-white/[0.16]"
+                  : "bg-white/[0.04] text-zinc-500 border-white/[0.08] hover:text-zinc-300"
               )}
             >
-              All Leagues ({liveData?.total ?? 0})
+              All Days ({allMatches.length})
             </button>
-            {leagues.map(league => {
-              const count = allMatches.filter(m => m.league.id === league.id).length;
+            {availableDates.map(d => {
+              const count = allMatches.filter(m => matchDay(m) === d).length;
               return (
                 <button
-                  key={league.id}
-                  onClick={() => setSelectedLeague(league.id)}
+                  key={d}
+                  onClick={() => setSelectedDate(d)}
                   className={cn(
-                    "flex-shrink-0 flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full border transition-colors whitespace-nowrap",
-                    selectedLeague === league.id
+                    "flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors whitespace-nowrap",
+                    selectedDate === d
+                      ? "bg-primary/20 text-primary border-primary/40"
+                      : "bg-white/[0.04] text-zinc-500 border-white/[0.08] hover:text-zinc-300"
+                  )}
+                >
+                  {dateLabel(d)} <span className="opacity-60">({count})</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ── League filter + live toggle ── */}
+        {(leagues.length > 1 || allMatches.some(m => isLiveStatus(m.status.short))) && (
+          <div className="flex items-center gap-2 mb-5 overflow-x-auto pb-1 scrollbar-none">
+            <Filter className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
+
+            {/* Live-only toggle */}
+            {allMatches.some(m => isLiveStatus(m.status.short)) && (
+              <button
+                onClick={() => setLiveOnly(v => !v)}
+                className={cn(
+                  "flex-shrink-0 flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full border transition-colors whitespace-nowrap",
+                  liveOnly
+                    ? "bg-red-500/20 text-red-400 border-red-500/40"
+                    : "bg-white/[0.04] text-zinc-500 border-white/[0.08] hover:text-red-400 hover:border-red-500/30"
+                )}
+              >
+                <span className={cn("w-1.5 h-1.5 rounded-full bg-red-500", liveOnly && "animate-pulse")} />
+                Live Only
+              </button>
+            )}
+
+            {leagues.length > 1 && !liveOnly && (
+              <>
+                <button
+                  onClick={() => setSelectedLeague(ALL_LEAGUES)}
+                  className={cn(
+                    "flex-shrink-0 text-xs font-semibold px-3 py-1 rounded-full border transition-colors whitespace-nowrap",
+                    selectedLeague === ALL_LEAGUES
                       ? "bg-primary/20 text-primary border-primary/40"
                       : "bg-white/[0.04] text-zinc-500 border-white/[0.08] hover:text-zinc-300 hover:border-white/[0.16]"
                   )}
                 >
-                  {league.logo && <img src={league.logo} alt="" loading="lazy" className="w-3.5 h-3.5 object-contain" />}
-                  {league.name}
-                  <span className="text-[10px] opacity-60">({count})</span>
+                  All Leagues
                 </button>
-              );
-            })}
+                {leagues.map(league => {
+                  const base = selectedDate === ALL_DATES ? allMatches : allMatches.filter(m => matchDay(m) === selectedDate);
+                  const count = base.filter(m => m.league.id === league.id).length;
+                  return (
+                    <button
+                      key={league.id}
+                      onClick={() => setSelectedLeague(league.id)}
+                      className={cn(
+                        "flex-shrink-0 flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full border transition-colors whitespace-nowrap",
+                        selectedLeague === league.id
+                          ? "bg-primary/20 text-primary border-primary/40"
+                          : "bg-white/[0.04] text-zinc-500 border-white/[0.08] hover:text-zinc-300 hover:border-white/[0.16]"
+                      )}
+                    >
+                      {league.logo && <img src={league.logo} alt="" loading="lazy" className="w-3.5 h-3.5 object-contain" />}
+                      {league.name}
+                      <span className="text-[10px] opacity-60">({count})</span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </div>
         )}
 

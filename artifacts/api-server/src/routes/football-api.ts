@@ -57,7 +57,7 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
       if (cached) return { data: cached.data, ok: true, stale: true };
       return { data: null, ok: false };
     }
-    const data = await res.json();
+    const data: any = await res.json();
 
     if (data.errors && Object.keys(data.errors).length > 0) {
       const errKey = Object.keys(data.errors)[0] ?? "";
@@ -142,7 +142,7 @@ async function apiFetchPlayer(path: string, ttl = FORM_TTL): Promise<{ data: any
       return { data: null, ok: false };
     }
 
-    const data = await res.json();
+    const data: any = await res.json();
 
     if (data.errors && Object.keys(data.errors).length > 0) {
       const pErrKey = Object.keys(data.errors)[0] ?? "";
@@ -331,6 +331,36 @@ function scheduleBackgroundRefresh() {
 }
 
 scheduleBackgroundRefresh();
+
+// ── Live-match 60-second poller ────────────────────────────────────────────
+// Polls /fixtures?live=all every 60s — only when live matches exist in DB.
+// Single efficient API call; result updates those specific fixtures in DB.
+const LIVE_STATUS_CODES = new Set(["1H", "2H", "ET", "HT", "P", "BT"]);
+let liveRefreshRunning = false;
+
+async function refreshLiveMatches() {
+  if (liveRefreshRunning || apiSuspended) return;
+  liveRefreshRunning = true;
+  try {
+    // Check DB for live matches — free read, no API cost
+    const { fixtures: dbFixtures } = await getFixturesFromDB();
+    const hasLive = dbFixtures.some(f => LIVE_STATUS_CODES.has(f.status.short));
+    if (!hasLive) return;
+
+    console.log("[live-refresh] Live matches detected — polling /fixtures?live=all");
+    const { data, ok } = await apiFetch("/fixtures?live=all", LIVE_TTL);
+    if (ok && data && (data.results ?? 0) > 0) {
+      await saveFixturesToDB(data.response ?? []);
+      console.log(`[live-refresh] Updated ${data.results} live fixtures`);
+    }
+  } catch (err: any) {
+    console.error("[live-refresh] Error:", err.message);
+  } finally {
+    liveRefreshRunning = false;
+  }
+}
+
+setInterval(refreshLiveMatches, 60 * 1000);
 
 // ── matches-today ──────────────────────────────────────────────────────────────
 router.get("/matches-today", async (_req, res) => {
