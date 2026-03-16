@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Link } from "wouter";
 import { format } from "date-fns";
-import { BarChart2, Target, Clock, AlertTriangle, Trophy, Flame, TrendingUp } from "lucide-react";
+import { BarChart2, Target, Clock, Flame } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -30,7 +30,7 @@ interface MatchWithAnalysis {
 }
 
 function useAnalysis() {
-  return useQuery<{ matches: MatchWithAnalysis[]; demo: boolean }>({
+  return useQuery<{ matches: MatchWithAnalysis[] }>({
     queryKey: ["daily-analysis", today],
     queryFn: async () => {
       const res = await fetch(`${BASE}/api/matches-today`);
@@ -88,7 +88,7 @@ function useAnalysis() {
         });
       }
 
-      return { matches, demo: data.demo ?? false };
+      return { matches };
     },
     staleTime: 5 * 60 * 1000,
   });
@@ -109,13 +109,6 @@ export default function DailyAnalysis() {
           AI probability analysis for {format(new Date(), "EEEE, dd MMMM yyyy")}
         </p>
       </div>
-
-      {data?.demo && (
-        <div className="mb-5 flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/5 border border-amber-500/15">
-          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
-          <p className="text-xs text-amber-300/80">Demo mode — probabilities calculated from sample fixture data.</p>
-        </div>
-      )}
 
       {isLoading ? (
         <div className="space-y-4">

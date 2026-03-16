@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Link } from "wouter";
-import { Flame, TrendingUp, AlertTriangle, RefreshCw, Trophy, Target, ExternalLink } from "lucide-react";
+import { Flame, TrendingUp, RefreshCw, Target, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 
@@ -26,7 +26,7 @@ interface ValueBet {
 const today = new Date().toISOString().split("T")[0];
 
 function useValueBets() {
-  return useQuery<{ bets: ValueBet[]; demo: boolean }>({
+  return useQuery<{ bets: ValueBet[] }>({
     queryKey: ["value-bets", today],
     queryFn: async () => {
       const res = await fetch(`${BASE}/api/matches-today`);
@@ -91,7 +91,7 @@ function useValueBets() {
       }
 
       bets.sort((a, b) => b.expectedValue - a.expectedValue);
-      return { bets, demo: data.demo ?? false };
+      return { bets };
     },
     staleTime: 5 * 60 * 1000,
     refetchInterval: 5 * 60 * 1000,
@@ -130,14 +130,6 @@ export default function ValueBets() {
           Refresh
         </button>
       </div>
-
-      {/* Demo notice */}
-      {data?.demo && (
-        <div className="mb-5 flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/5 border border-amber-500/15">
-          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
-          <p className="text-xs text-amber-300/80">Demo mode — showing value bets calculated from sample match data.</p>
-        </div>
-      )}
 
       {/* Explainer */}
       <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4 mb-6">

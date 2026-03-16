@@ -14,7 +14,6 @@ import {
   Swords,
   Globe,
   Clock,
-  AlertTriangle,
   Target,
   Loader2,
   Shield,
@@ -31,7 +30,6 @@ interface Fixture {
   homeTeam: { id: number; name: string; logo: string; winner: boolean | null };
   awayTeam: { id: number; name: string; logo: string; winner: boolean | null };
   score: { home: number | null; away: number | null };
-  demo?: boolean;
 }
 
 const TABS = [
@@ -288,9 +286,6 @@ function TabTeamStats({ fixture, stats }: { fixture: Fixture; stats: any }) {
         ))}
       </div>
 
-      {stats.demo && (
-        <p className="text-[10px] text-zinc-700 text-center">Demo statistics shown</p>
-      )}
     </div>
   );
 }
@@ -441,7 +436,6 @@ function TabOdds({ oddsData, fixture, analysis }: { oddsData: any; fixture: Fixt
         <div className="flex items-center gap-2 text-xs text-zinc-500 pb-1">
           <Shield className="w-3 h-3" />
           Source: {bookmakers.join(", ")}
-          {oddsData.demo && " (demo)"}
         </div>
       )}
 
@@ -592,50 +586,14 @@ function TabAI({ fixture, analysis, oddsData }: { fixture: Fixture; analysis: an
 }
 
 // ── TAB: Players ──────────────────────────────────────────────────────────────
-function TabPlayers({ fixture }: { fixture: Fixture }) {
-  const demoPlayers = [
-    { name: "Striker A", team: fixture.homeTeam.name, pos: "FW", goals: 0.72, assists: 0.18, shots: 2.4, shotsOT: 1.1 },
-    { name: "Midfielder B", team: fixture.homeTeam.name, pos: "MF", goals: 0.31, assists: 0.54, shots: 1.8, shotsOT: 0.7 },
-    { name: "Striker C", team: fixture.awayTeam.name, pos: "FW", goals: 0.65, assists: 0.22, shots: 2.1, shotsOT: 0.9 },
-    { name: "Midfielder D", team: fixture.awayTeam.name, pos: "MF", goals: 0.18, assists: 0.61, shots: 1.3, shotsOT: 0.5 },
-  ];
-
+function TabPlayers() {
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 text-xs text-zinc-500 pb-1">
-        <Users className="w-3 h-3" />
-        Per 90 min stats (last 10 matches)
+      <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
+        <Users className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
+        <p className="text-zinc-500 text-sm font-medium">Player statistics not available</p>
+        <p className="text-zinc-700 text-xs mt-1">Per-match player data requires a premium API plan. Visit Top Players for season rankings.</p>
       </div>
-      <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-white/[0.06]">
-              <th className="text-left px-4 py-3 text-xs text-zinc-500 font-semibold uppercase">Player</th>
-              <th className="text-center px-3 py-3 text-xs text-zinc-500 font-semibold uppercase">Gls</th>
-              <th className="text-center px-3 py-3 text-xs text-zinc-500 font-semibold uppercase">Ast</th>
-              <th className="text-center px-3 py-3 text-xs text-zinc-500 font-semibold uppercase">Shots</th>
-              <th className="text-center px-3 py-3 text-xs text-zinc-500 font-semibold uppercase hidden sm:table-cell">SoT</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-white/[0.04]">
-            {demoPlayers.map((p, i) => (
-              <tr key={i} className="hover:bg-white/[0.02]">
-                <td className="px-4 py-3">
-                  <div className="font-medium text-white text-xs">{p.name}</div>
-                  <div className="text-[10px] text-zinc-600">{p.team} · {p.pos}</div>
-                </td>
-                <td className="px-3 py-3 text-center font-bold text-primary tabular-nums text-xs">{p.goals}</td>
-                <td className="px-3 py-3 text-center font-bold text-blue-400 tabular-nums text-xs">{p.assists}</td>
-                <td className="px-3 py-3 text-center text-zinc-300 tabular-nums text-xs">{p.shots}</td>
-                <td className="px-3 py-3 text-center text-zinc-500 tabular-nums text-xs hidden sm:table-cell">{p.shotsOT}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-[10px] text-zinc-700 text-center">
-        Full player data available when live API feed is active.
-      </p>
     </div>
   );
 }
@@ -739,14 +697,6 @@ export default function FixtureDetail() {
       >
         <ArrowLeft className="w-4 h-4" /> Back to Matches
       </Link>
-
-      {/* Demo notice */}
-      {fixture.demo && (
-        <div className="mb-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/15 text-xs text-amber-400/80">
-          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-          Demo data — live API feed temporarily unavailable
-        </div>
-      )}
 
       {/* Match Header Card */}
       <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-6 mb-6 relative overflow-hidden">
@@ -874,7 +824,7 @@ export default function FixtureDetail() {
           {activeTab === "overview" && <TabOverview fixture={fixture} analysis={analysis} />}
           {activeTab === "stats" && <TabTeamStats fixture={fixture} stats={statsData} />}
           {activeTab === "h2h" && <TabH2H h2h={h2hData} fixture={fixture} />}
-          {activeTab === "players" && <TabPlayers fixture={fixture} />}
+          {activeTab === "players" && <TabPlayers />}
           {activeTab === "odds" && <TabOdds oddsData={oddsData} fixture={fixture} analysis={analysis} />}
           {activeTab === "ai" && <TabAI fixture={fixture} analysis={analysis} oddsData={oddsData} />}
         </motion.div>
