@@ -8,7 +8,8 @@ const cache = new Map<string, { data: unknown; ts: number }>();
 const ODDS_TTL = 5 * 60 * 1000;       // 5 minutes
 const STATS_TTL = 10 * 60 * 1000;     // 10 minutes
 const MATCH_TTL = 2 * 60 * 1000;      // 2 minutes
-const SQUAD_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const SQUAD_TTL = 24 * 60 * 60 * 1000; // 24 hours – squad roster
+const FORM_TTL  =  6 * 60 * 60 * 1000; //  6 hours – player performance stats
 
 let apiSuspended = false;
 const SUSPENDED_CACHE_TTL = 5 * 60 * 1000;
@@ -618,12 +619,12 @@ router.get("/fixture/:id/squad", async (req, res) => {
     // Determine active season (try current year's start; European 2025-26 = season 2025)
     const season = new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1;
 
-    // Fetch squads + season stats for both teams in parallel
+    // Fetch squads (24h) + season stats (6h) for both teams in parallel
     const [homeSquadRes, awaySquadRes, homeStatsRes, awayStatsRes] = await Promise.all([
       apiFetch(`/players/squads?team=${homeId}`, SQUAD_TTL),
       apiFetch(`/players/squads?team=${awayId}`, SQUAD_TTL),
-      apiFetch(`/players?team=${homeId}&season=${season}`, SQUAD_TTL),
-      apiFetch(`/players?team=${awayId}&season=${season}`, SQUAD_TTL),
+      apiFetch(`/players?team=${homeId}&season=${season}`, FORM_TTL),
+      apiFetch(`/players?team=${awayId}&season=${season}`, FORM_TTL),
     ]);
 
     const positionOrder = (pos: string): number => {
@@ -631,7 +632,7 @@ router.get("/fixture/:id/squad", async (req, res) => {
       if (p.includes("goalkeeper")) return 0;
       if (p.includes("defender"))   return 1;
       if (p.includes("midfielder")) return 2;
-      return 3; // Forward / Attacker
+      return 3;
     };
 
     const positionLabel = (pos: string): string => {
@@ -652,6 +653,9 @@ router.get("/fixture/:id/squad", async (req, res) => {
       return map;
     };
 
+    const avg = (val: number, apps: number): number =>
+      apps > 0 ? Math.round((val / apps) * 100) / 100 : 0;
+
     const mapTeam = (
       teamRaw: any,
       squadRes: { data: any; ok: boolean },
@@ -662,18 +666,63 @@ router.get("/fixture/:id/squad", async (req, res) => {
 
       const players = squadList
         .map((sp: any) => {
-          const entry = statsMap.get(sp.id);
-          const pStats = entry?.statistics?.[0] ?? {};
+          const entry   = statsMap.get(sp.id);
+          const ps      = entry?.statistics?.[0] ?? {};
+          const apps    = ps.games?.appearances ?? 0;
+          const goals   = ps.goals?.total       ?? 0;
+          const assists = ps.goals?.assists      ?? 0;
+          const shots   = ps.shots?.total        ?? 0;
+          const sot     = ps.shots?.on           ?? 0;
+          const kp      = ps.passes?.key         ?? 0;
+          const drib    = ps.dribbles?.attempts  ?? 0;
+          const yellow  = ps.cards?.yellow       ?? 0;
+          const red     = (ps.cards?.red ?? 0) + (ps.cards?.yellowred ?? 0);
+          const mins    = ps.games?.minutes      ?? 0;
+          const rating  = ps.games?.rating ? parseFloat(ps.games.rating) : null;
+
+          // Per-game averages
+          const avgGoals    = avg(goals,   apps);
+          const avgAssists  = avg(assists, apps);
+          const avgShots    = avg(shots,   apps);
+          const avgSOT      = avg(sot,     apps);
+          const avgKeyPasses = avg(kp,     apps);
+
+          // Performance indicators (based on season per-game averages)
+          const hotPlayer  = avgGoals   >= 0.4;            // ≈ 2 goals per 5 games
+          const shotVolume = avgShots   >= 3;
+          const playmaker  = avgKeyPasses >= 2;
+          const cardRisk   = apps > 0 && (yellow + red) / apps >= 0.4; // ≈ 2 cards per 5 games
+
           return {
             id: sp.id,
-            name: sp.name ?? "Unknown",
-            photo: sp.photo ?? null,
-            age: sp.age ?? null,
-            position: positionLabel(sp.position ?? ""),
+            name:        sp.name    ?? "Unknown",
+            photo:       sp.photo   ?? null,
+            age:         sp.age     ?? null,
+            position:    positionLabel(sp.position ?? ""),
             nationality: entry?.player?.nationality ?? null,
-            appearances: pStats.games?.appearances ?? 0,
-            goals: pStats.goals?.total ?? 0,
-            assists: pStats.goals?.assists ?? 0,
+            // Season totals
+            appearances: apps,
+            goals,
+            assists,
+            shots,
+            shotsOnTarget: sot,
+            keyPasses: kp,
+            dribbles:  drib,
+            yellowCards: yellow,
+            redCards:    red,
+            minutesPlayed: mins,
+            avgRating: rating,
+            // Per-game averages
+            avgGoals,
+            avgAssists,
+            avgShots,
+            avgSOT,
+            avgKeyPasses,
+            // Performance indicators
+            hotPlayer,
+            shotVolume,
+            playmaker,
+            cardRisk,
           };
         })
         .sort((a: any, b: any) => positionOrder(a.position) - positionOrder(b.position));

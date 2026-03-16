@@ -903,7 +903,7 @@ function TabAI({ fixture, analysis, oddsData, h2hData }: {
   );
 }
 
-// ── TAB: Players (Squad) ───────────────────────────────────────────────────────
+// ── TAB: Players (Squad + Performance Stats) ──────────────────────────────────
 interface SquadPlayer {
   id: number;
   name: string;
@@ -914,6 +914,23 @@ interface SquadPlayer {
   appearances: number;
   goals: number;
   assists: number;
+  shots: number;
+  shotsOnTarget: number;
+  keyPasses: number;
+  dribbles: number;
+  yellowCards: number;
+  redCards: number;
+  minutesPlayed: number;
+  avgRating: number | null;
+  avgGoals: number;
+  avgAssists: number;
+  avgShots: number;
+  avgSOT: number;
+  avgKeyPasses: number;
+  hotPlayer: boolean;
+  shotVolume: boolean;
+  playmaker: boolean;
+  cardRisk: boolean;
 }
 interface SquadTeam {
   team: { id: number; name: string; logo: string };
@@ -924,6 +941,8 @@ interface PlayersData {
   teams: SquadTeam[];
 }
 
+type SortKey = "goals" | "shots" | "shotsOnTarget" | "assists" | "avgRating" | "appearances";
+
 function squadPositionBadge(pos: string): { label: string; className: string } {
   const p = pos.toLowerCase();
   if (p.includes("goalkeeper")) return { label: "GK",  className: "bg-amber-500/20 text-amber-400 border-amber-500/20" };
@@ -932,87 +951,231 @@ function squadPositionBadge(pos: string): { label: string; className: string } {
   return                               { label: "FWD", className: "bg-red-500/20   text-red-400   border-red-500/20" };
 }
 
-function SquadPlayerRow({ player }: { player: SquadPlayer }) {
-  const badge = squadPositionBadge(player.position);
-  const hasStats = player.appearances > 0 || player.goals > 0 || player.assists > 0;
-
+function RatingBar({ rating }: { rating: number | null }) {
+  if (rating === null) return <span className="text-[10px] text-zinc-700 italic">—</span>;
+  const MIN = 5.5, MAX = 9.5;
+  const pct = Math.min(100, Math.max(0, ((rating - MIN) / (MAX - MIN)) * 100));
+  const color =
+    rating >= 7.5 ? "bg-primary"     :
+    rating >= 6.8 ? "bg-amber-400"   :
+    rating >= 6.0 ? "bg-zinc-500"    : "bg-zinc-700";
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/[0.02] border border-white/[0.04] hover:bg-white/[0.04] transition-colors">
-      {/* Photo */}
-      <div className="flex-shrink-0 w-9 h-9 rounded-full bg-white/[0.06] border border-white/[0.08] overflow-hidden">
-        {player.photo ? (
-          <img src={player.photo} alt={player.name} className="w-full h-full object-cover" loading="lazy" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-zinc-600">
-            <Users className="w-3.5 h-3.5" />
-          </div>
-        )}
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+        <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${pct}%` }} />
       </div>
-
-      {/* Name + meta */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="text-sm font-semibold text-white truncate leading-tight">{player.name}</span>
-          <span className={cn(
-            "text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0",
-            badge.className
-          )}>
-            {badge.label}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-[10px] text-zinc-600">
-          {player.age !== null && <span>{player.age} yrs</span>}
-          {player.nationality && (
-            <>
-              {player.age !== null && <span className="text-zinc-800">·</span>}
-              <span>{player.nationality}</span>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Season stats */}
-      <div className="flex items-center gap-3 flex-shrink-0 text-right">
-        {hasStats ? (
-          <>
-            <div className="text-center">
-              <div className="text-xs font-bold text-zinc-300 tabular-nums">{player.appearances}</div>
-              <div className="text-[9px] text-zinc-700 uppercase">Apps</div>
-            </div>
-            <div className="text-center">
-              <div className={cn("text-xs font-bold tabular-nums", player.goals > 0 ? "text-primary" : "text-zinc-600")}>{player.goals}</div>
-              <div className="text-[9px] text-zinc-700 uppercase">Gls</div>
-            </div>
-            <div className="text-center">
-              <div className={cn("text-xs font-bold tabular-nums", player.assists > 0 ? "text-blue-400" : "text-zinc-600")}>{player.assists}</div>
-              <div className="text-[9px] text-zinc-700 uppercase">Ast</div>
-            </div>
-          </>
-        ) : (
-          <span className="text-[10px] text-zinc-700 italic">No stats</span>
-        )}
-      </div>
+      <span className={cn(
+        "text-xs font-bold tabular-nums w-7 text-right flex-shrink-0",
+        rating >= 7.5 ? "text-primary" : rating >= 6.8 ? "text-amber-400" : "text-zinc-500"
+      )}>
+        {rating.toFixed(1)}
+      </span>
     </div>
   );
 }
 
-function SquadPositionGroup({ position, players }: { position: string; players: SquadPlayer[] }) {
-  if (players.length === 0) return null;
-  const badge = squadPositionBadge(position);
+function PerformanceIndicators({ player }: { player: SquadPlayer }) {
+  const indicators = [
+    player.hotPlayer  && { icon: "🔥", label: "Hot",      title: "Scored in 2+ of last 5 games (season avg)" },
+    player.shotVolume && { icon: "🎯", label: "Shooter",  title: "Averages 3+ shots per game" },
+    player.playmaker  && { icon: "🧠", label: "Playmaker",title: "Averages 2+ key passes per game" },
+    player.cardRisk   && { icon: "⚠",  label: "Card Risk",title: "High card rate (2+ cards per 5 games avg)" },
+  ].filter(Boolean) as { icon: string; label: string; title: string }[];
+
+  if (indicators.length === 0) return null;
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2 px-1 mb-1">
-        <span className={cn("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider", badge.className)}>
-          {badge.label === "GK" ? "Goalkeepers" : badge.label === "DEF" ? "Defenders" : badge.label === "MID" ? "Midfielders" : "Forwards"}
+    <div className="flex flex-wrap gap-1 mt-1.5">
+      {indicators.map((ind) => (
+        <span key={ind.label} title={ind.title}
+          className="inline-flex items-center gap-0.5 text-[9px] font-semibold px-1.5 py-0.5 rounded-md bg-white/[0.05] text-zinc-400 border border-white/[0.06]">
+          {ind.icon} {ind.label}
         </span>
-        <span className="text-[9px] text-zinc-700">{players.length}</span>
+      ))}
+    </div>
+  );
+}
+
+function PlayerStatChip({ label, value, highlight = false }: {
+  label: string; value: string | number; highlight?: boolean;
+}) {
+  return (
+    <div className={cn(
+      "flex flex-col items-center justify-center rounded-lg px-2 py-1.5 min-w-[40px] border",
+      highlight
+        ? "bg-primary/10 border-primary/20 text-primary"
+        : "bg-white/[0.03] border-white/[0.05] text-zinc-400"
+    )}>
+      <span className={cn("text-xs font-bold tabular-nums leading-none", highlight ? "text-primary" : "text-zinc-300")}>
+        {value}
+      </span>
+      <span className="text-[8px] uppercase tracking-wide mt-0.5 opacity-70">{label}</span>
+    </div>
+  );
+}
+
+function SquadPlayerCard({ player }: { player: SquadPlayer }) {
+  const badge = squadPositionBadge(player.position);
+  const hasStats = player.appearances > 0;
+  const totalCards = player.yellowCards + player.redCards;
+
+  return (
+    <div className="rounded-xl bg-white/[0.02] border border-white/[0.05] overflow-hidden">
+      {/* Header row */}
+      <div className="flex items-center gap-3 px-3 pt-3 pb-2">
+        <div className="flex-shrink-0 w-10 h-10 rounded-full bg-white/[0.06] border border-white/[0.08] overflow-hidden">
+          {player.photo ? (
+            <img src={player.photo} alt={player.name} className="w-full h-full object-cover" loading="lazy" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-zinc-600">
+              <Users className="w-4 h-4" />
+            </div>
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-semibold text-white leading-tight truncate">{player.name}</span>
+            <span className={cn("text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0", badge.className)}>
+              {badge.label}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 text-[10px] text-zinc-600 mt-0.5 flex-wrap">
+            {player.age !== null && <span>{player.age} yrs</span>}
+            {player.nationality && <><span className="text-zinc-800">·</span><span>{player.nationality}</span></>}
+            {player.minutesPlayed > 0 && <><span className="text-zinc-800">·</span><span>{player.minutesPlayed}'</span></>}
+          </div>
+          <PerformanceIndicators player={player} />
+        </div>
       </div>
-      {players.map((p) => <SquadPlayerRow key={p.id} player={p} />)}
+
+      {hasStats ? (
+        <>
+          {/* Stats chips */}
+          <div className="flex items-center gap-1.5 px-3 pb-2.5 flex-wrap">
+            <PlayerStatChip label="Apps"  value={player.appearances} />
+            <PlayerStatChip label="Goals" value={player.goals}   highlight={player.goals > 0} />
+            <PlayerStatChip label="Ast"   value={player.assists} highlight={player.assists > 0} />
+            <PlayerStatChip label="Shots" value={player.shots}   highlight={player.shotVolume} />
+            <PlayerStatChip label="SOT"   value={player.shotsOnTarget} highlight={player.shotsOnTarget > 0} />
+            <PlayerStatChip label="KP"    value={player.keyPasses}    highlight={player.playmaker} />
+            {totalCards > 0 && (
+              <PlayerStatChip label="Cards" value={totalCards} highlight={player.cardRisk} />
+            )}
+          </div>
+
+          {/* Averages row */}
+          <div className="mx-3 mb-2.5 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+            <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider mb-1.5">Per-Game Averages</p>
+            <div className="grid grid-cols-5 gap-1 text-center">
+              {[
+                { label: "Goals", value: player.avgGoals.toFixed(2),   highlight: player.avgGoals   > 0 },
+                { label: "Ast",   value: player.avgAssists.toFixed(2), highlight: player.avgAssists > 0 },
+                { label: "Shots", value: player.avgShots.toFixed(1),   highlight: player.shotVolume },
+                { label: "SOT",   value: player.avgSOT.toFixed(1),     highlight: player.avgSOT     > 0 },
+                { label: "KP",    value: player.avgKeyPasses.toFixed(1),highlight: player.playmaker },
+              ].map(({ label, value, highlight }) => (
+                <div key={label}>
+                  <div className={cn("text-[11px] font-bold tabular-nums", highlight ? "text-primary" : "text-zinc-400")}>
+                    {value}
+                  </div>
+                  <div className="text-[8px] text-zinc-700 uppercase">{label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Rating bar */}
+          <div className="mx-3 mb-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider">Season Rating</span>
+            </div>
+            <RatingBar rating={player.avgRating} />
+          </div>
+        </>
+      ) : (
+        <p className="text-[10px] text-zinc-700 italic px-3 pb-3">Player performance data updating.</p>
+      )}
+    </div>
+  );
+}
+
+function sortPlayers(players: SquadPlayer[], sortKey: SortKey): SquadPlayer[] {
+  return [...players].sort((a, b) => {
+    switch (sortKey) {
+      case "goals":        return b.goals - a.goals;
+      case "shots":        return b.shots - a.shots;
+      case "shotsOnTarget":return b.shotsOnTarget - a.shotsOnTarget;
+      case "assists":      return b.assists - a.assists;
+      case "avgRating":    return (b.avgRating ?? 0) - (a.avgRating ?? 0);
+      case "appearances":  return b.appearances - a.appearances;
+    }
+  });
+}
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "appearances",   label: "Apps" },
+  { key: "goals",         label: "Goals" },
+  { key: "shots",         label: "Shots" },
+  { key: "shotsOnTarget", label: "SOT" },
+  { key: "assists",       label: "Assists" },
+  { key: "avgRating",     label: "Rating" },
+];
+
+function TeamSquadSection({ teamData, sectionLabel, sortKey }: {
+  teamData: SquadTeam;
+  sectionLabel: string;
+  sortKey: SortKey;
+}) {
+  const sorted = sortPlayers(teamData.players, sortKey);
+  const positionGroups = ["Goalkeeper", "Defender", "Midfielder", "Forward"] as const;
+  const byPosition = Object.fromEntries(
+    positionGroups.map((pos) => [pos, sorted.filter((p) => p.position === pos)])
+  ) as Record<string, SquadPlayer[]>;
+
+  return (
+    <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl overflow-hidden">
+      {/* Team header */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06] bg-white/[0.02]">
+        {teamData.team.logo && (
+          <img src={teamData.team.logo} alt={teamData.team.name} className="w-6 h-6 object-contain" loading="lazy" />
+        )}
+        <div>
+          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">{sectionLabel}</p>
+          <p className="text-sm font-semibold text-white leading-tight">{teamData.team.name}</p>
+        </div>
+        <span className="ml-auto text-[10px] font-medium text-zinc-600 bg-white/[0.04] px-2 py-0.5 rounded-full">
+          {teamData.players.length} players
+        </span>
+      </div>
+
+      <div className="p-3 space-y-4">
+        {teamData.players.length === 0 ? (
+          <p className="text-zinc-600 text-xs text-center py-6">No squad data available</p>
+        ) : (
+          positionGroups.map((pos) => {
+            const group = byPosition[pos] ?? [];
+            if (group.length === 0) return null;
+            const badge = squadPositionBadge(pos);
+            return (
+              <div key={pos} className="space-y-2">
+                <div className="flex items-center gap-2 px-1">
+                  <span className={cn("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider", badge.className)}>
+                    {badge.label === "GK" ? "Goalkeepers" : badge.label === "DEF" ? "Defenders" : badge.label === "MID" ? "Midfielders" : "Forwards"}
+                  </span>
+                  <span className="text-[9px] text-zinc-700">{group.length}</span>
+                </div>
+                {group.map((p) => <SquadPlayerCard key={p.id} player={p} />)}
+              </div>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }
 
 function TabPlayers({ data }: { data: PlayersData | undefined }) {
+  const [sortKey, setSortKey] = useState<SortKey>("appearances");
+
   if (!data) {
     return (
       <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
@@ -1026,65 +1189,60 @@ function TabPlayers({ data }: { data: PlayersData | undefined }) {
     return (
       <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
         <Users className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
-        <p className="text-zinc-500 text-sm font-medium">Player squad data is updating.</p>
+        <p className="text-zinc-500 text-sm font-medium">Player performance data updating.</p>
         <p className="text-zinc-700 text-xs mt-1">Squad information will be available shortly.</p>
       </div>
     );
   }
 
   const sectionLabels = ["HOME SQUAD", "AWAY SQUAD"];
-  const positionGroups = ["Goalkeeper", "Defender", "Midfielder", "Forward"] as const;
 
   return (
-    <div className="space-y-6">
-      {data.teams.map((teamData, idx) => {
-        const byPosition = Object.fromEntries(
-          positionGroups.map((pos) => [
-            pos,
-            teamData.players.filter((p) => p.position === pos),
-          ])
-        ) as Record<string, SquadPlayer[]>;
-
-        return (
-          <div key={teamData.team.id} className="bg-[#09090b] border border-white/[0.07] rounded-2xl overflow-hidden">
-            {/* Team header */}
-            <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06] bg-white/[0.02]">
-              {teamData.team.logo && (
-                <img src={teamData.team.logo} alt={teamData.team.name} className="w-6 h-6 object-contain" loading="lazy" />
+    <div className="space-y-5">
+      {/* Sort Controls */}
+      <div className="bg-[#09090b] border border-white/[0.07] rounded-xl p-3">
+        <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider mb-2">Sort players by</p>
+        <div className="flex flex-wrap gap-1.5">
+          {SORT_OPTIONS.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setSortKey(key)}
+              className={cn(
+                "text-[10px] font-semibold px-2.5 py-1 rounded-lg border transition-colors",
+                sortKey === key
+                  ? "bg-primary/15 border-primary/30 text-primary"
+                  : "bg-white/[0.03] border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06]"
               )}
-              <div>
-                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">{sectionLabels[idx] ?? "SQUAD"}</p>
-                <p className="text-sm font-semibold text-white leading-tight">{teamData.team.name}</p>
-              </div>
-              <span className="ml-auto text-[10px] font-medium text-zinc-600 bg-white/[0.04] px-2 py-0.5 rounded-full">
-                {teamData.players.length} players
-              </span>
-            </div>
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-            {/* Column headers */}
-            <div className="flex items-center px-3 pt-2 pb-1">
-              <div className="w-9 flex-shrink-0" />
-              <div className="flex-1 pl-3" />
-              <div className="flex items-center gap-3 flex-shrink-0 text-[9px] text-zinc-700 uppercase tracking-wider pr-0.5">
-                <span className="w-7 text-center">Apps</span>
-                <span className="w-5 text-center">Gls</span>
-                <span className="w-5 text-center">Ast</span>
-              </div>
-            </div>
+      {/* Indicators legend */}
+      <div className="flex flex-wrap gap-2 px-1">
+        {[
+          { icon: "🔥", label: "Hot — scoring form" },
+          { icon: "🎯", label: "Shooter — 3+ shots/game" },
+          { icon: "🧠", label: "Playmaker — 2+ KP/game" },
+          { icon: "⚠",  label: "Card Risk" },
+        ].map(({ icon, label }) => (
+          <span key={label} className="text-[9px] text-zinc-600 flex items-center gap-1">
+            {icon} <span>{label}</span>
+          </span>
+        ))}
+      </div>
 
-            {/* Players grouped by position */}
-            <div className="p-3 space-y-4">
-              {teamData.players.length === 0 ? (
-                <p className="text-zinc-600 text-xs text-center py-6">No squad data available</p>
-              ) : (
-                positionGroups.map((pos) => (
-                  <SquadPositionGroup key={pos} position={pos} players={byPosition[pos] ?? []} />
-                ))
-              )}
-            </div>
-          </div>
-        );
-      })}
+      {/* Team sections */}
+      {data.teams.map((teamData, idx) => (
+        <TeamSquadSection
+          key={teamData.team.id}
+          teamData={teamData}
+          sectionLabel={sectionLabels[idx] ?? "SQUAD"}
+          sortKey={sortKey}
+        />
+      ))}
     </div>
   );
 }
