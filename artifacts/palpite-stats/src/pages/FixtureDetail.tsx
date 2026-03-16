@@ -314,45 +314,77 @@ function TabTeamStats({ fixture, stats }: { fixture: Fixture; stats: any }) {
 }
 
 // ── TAB: H2H ──────────────────────────────────────────────────────────────────
+function safeDate(dateStr: string | null | undefined, fmt: string): string {
+  if (!dateStr) return "—";
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return "—";
+    return format(d, fmt);
+  } catch {
+    return "—";
+  }
+}
+
 function TabH2H({ h2h, fixture }: { h2h: any; fixture: Fixture }) {
   if (!h2h) {
     return (
       <div className="flex items-center justify-center py-16 text-zinc-600 gap-2">
         <Loader2 className="w-5 h-5 animate-spin" />
-        Loading head-to-head...
+        <span className="text-sm">Loading head-to-head...</span>
       </div>
     );
   }
 
-  const matches = h2h.h2h ?? [];
+  const matches: any[] = Array.isArray(h2h.h2h) ? h2h.h2h : [];
+
   if (matches.length === 0) {
     return (
-      <div className="p-10 text-center text-zinc-600">
-        No head-to-head records found.
+      <div className="p-10 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
+        <Swords className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
+        <p className="text-zinc-500 text-sm font-medium">No recent head-to-head matches available.</p>
+        <p className="text-zinc-700 text-xs mt-1">These teams may not have faced each other recently.</p>
       </div>
     );
   }
 
+  const homeName = fixture.homeTeam.name;
+  const awayName = fixture.awayTeam.name;
+
   const homeWins = matches.filter((m: any) => {
-    const homeIsHome = m.homeTeam.name === fixture.homeTeam.name;
-    if (homeIsHome) return m.score.home > m.score.away;
-    return m.score.away > m.score.home;
+    const scoreHome = m.score?.home ?? null;
+    const scoreAway = m.score?.away ?? null;
+    if (scoreHome === null || scoreAway === null) return false;
+    const homeIsHome = m.homeTeam?.name === homeName;
+    return homeIsHome ? scoreHome > scoreAway : scoreAway > scoreHome;
   }).length;
+
   const awayWins = matches.filter((m: any) => {
-    const awayIsAway = m.awayTeam.name === fixture.awayTeam.name;
-    if (awayIsAway) return m.score.away > m.score.home;
-    return m.score.home > m.score.away;
+    const scoreHome = m.score?.home ?? null;
+    const scoreAway = m.score?.away ?? null;
+    if (scoreHome === null || scoreAway === null) return false;
+    const awayIsAway = m.awayTeam?.name === awayName;
+    return awayIsAway ? scoreAway > scoreHome : scoreHome > scoreAway;
   }).length;
-  const draws = matches.filter((m: any) => m.score.home === m.score.away).length;
+
+  const draws = matches.filter((m: any) => {
+    const scoreHome = m.score?.home ?? null;
+    const scoreAway = m.score?.away ?? null;
+    return scoreHome !== null && scoreAway !== null && scoreHome === scoreAway;
+  }).length;
+
+  const total = Math.max(1, matches.length);
 
   return (
     <div className="space-y-5">
-      {/* H2H Summary */}
+      {/* Summary bar */}
       <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-5">
+        <p className="text-[10px] text-zinc-600 uppercase font-bold tracking-wider text-center mb-4">
+          Last {matches.length} meetings
+        </p>
         <div className="flex items-center justify-between mb-4">
           <div className="text-center flex-1">
             <div className="text-2xl font-display font-black text-primary">{homeWins}</div>
-            <div className="text-[10px] text-zinc-500 uppercase font-semibold truncate">{fixture.homeTeam.name}</div>
+            <div className="text-[10px] text-zinc-500 uppercase font-semibold truncate px-1">{homeName}</div>
           </div>
           <div className="text-center px-4">
             <div className="text-2xl font-display font-black text-zinc-400">{draws}</div>
@@ -360,42 +392,61 @@ function TabH2H({ h2h, fixture }: { h2h: any; fixture: Fixture }) {
           </div>
           <div className="text-center flex-1">
             <div className="text-2xl font-display font-black text-blue-400">{awayWins}</div>
-            <div className="text-[10px] text-zinc-500 uppercase font-semibold truncate">{fixture.awayTeam.name}</div>
+            <div className="text-[10px] text-zinc-500 uppercase font-semibold truncate px-1">{awayName}</div>
           </div>
         </div>
         <div className="h-2 flex rounded-full overflow-hidden bg-white/[0.05]">
-          <div className="bg-primary h-full transition-all" style={{ width: `${(homeWins / matches.length) * 100}%` }} />
-          <div className="bg-zinc-600 h-full transition-all" style={{ width: `${(draws / matches.length) * 100}%` }} />
-          <div className="bg-blue-500 h-full transition-all" style={{ width: `${(awayWins / matches.length) * 100}%` }} />
+          <div className="bg-primary h-full transition-all" style={{ width: `${(homeWins / total) * 100}%` }} />
+          <div className="bg-zinc-600 h-full transition-all" style={{ width: `${(draws / total) * 100}%` }} />
+          <div className="bg-blue-500 h-full transition-all" style={{ width: `${(awayWins / total) * 100}%` }} />
         </div>
       </div>
 
       {/* Match list */}
-      <div className="space-y-3">
+      <div className="space-y-2">
         {matches.map((m: any, i: number) => {
-          const isDraw = m.score.home === m.score.away;
-          const homeWon = m.score.home > m.score.away;
+          const scoreHome = m.score?.home ?? null;
+          const scoreAway = m.score?.away ?? null;
+          const hasScore = scoreHome !== null && scoreAway !== null;
+          const isDraw = hasScore && scoreHome === scoreAway;
+          const homeWon = hasScore && (scoreHome as number) > (scoreAway as number);
+          const leagueName = m.league?.name ?? null;
+
           return (
             <div key={i} className="bg-[#09090b] border border-white/[0.06] rounded-xl px-4 py-3">
+              {leagueName && (
+                <div className="flex items-center gap-1.5 mb-2">
+                  {m.league?.logo && (
+                    <img src={m.league.logo} alt="" className="w-3.5 h-3.5 object-contain opacity-60" loading="lazy" />
+                  )}
+                  <span className="text-[9px] text-zinc-600 truncate">{leagueName}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between gap-3">
-                <div className="flex-1 text-right">
-                  <span className="text-xs font-semibold text-zinc-300 truncate block">{m.homeTeam.name}</span>
+                <div className="flex-1 text-right min-w-0">
+                  <span className="text-xs font-semibold text-zinc-300 truncate block">{m.homeTeam?.name ?? "Home"}</span>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className={cn("font-display font-black text-lg tabular-nums", homeWon ? "text-white" : isDraw ? "text-zinc-400" : "text-zinc-600")}>
-                    {m.score.home}
-                  </span>
-                  <span className="text-zinc-700">–</span>
-                  <span className={cn("font-display font-black text-lg tabular-nums", !homeWon && !isDraw ? "text-white" : isDraw ? "text-zinc-400" : "text-zinc-600")}>
-                    {m.score.away}
-                  </span>
+                  {hasScore ? (
+                    <>
+                      <span className={cn("font-display font-black text-lg tabular-nums", homeWon ? "text-white" : isDraw ? "text-zinc-400" : "text-zinc-600")}>
+                        {scoreHome}
+                      </span>
+                      <span className="text-zinc-700">–</span>
+                      <span className={cn("font-display font-black text-lg tabular-nums", !homeWon && !isDraw ? "text-white" : isDraw ? "text-zinc-400" : "text-zinc-600")}>
+                        {scoreAway}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-zinc-700 text-sm font-bold px-3">vs</span>
+                  )}
                 </div>
-                <div className="flex-1">
-                  <span className="text-xs font-semibold text-zinc-300 truncate block">{m.awayTeam.name}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs font-semibold text-zinc-300 truncate block">{m.awayTeam?.name ?? "Away"}</span>
                 </div>
               </div>
-              <div className="text-center mt-1">
-                <span className="text-[9px] text-zinc-700">{format(new Date(m.date), "dd MMM yyyy")}</span>
+              <div className="text-center mt-1.5">
+                <span className="text-[9px] text-zinc-700">{safeDate(m.date, "dd MMM yyyy")}</span>
               </div>
             </div>
           );
@@ -628,11 +679,11 @@ function TabAI({ fixture, analysis, oddsData, h2hData }: {
           </div>
           <div className="flex justify-between">
             <span className="text-zinc-600">Date</span>
-            <span className="text-zinc-300 font-medium">{format(new Date(fixture.date), "dd MMM yyyy")}</span>
+            <span className="text-zinc-300 font-medium">{safeDate(fixture.date, "dd MMM yyyy")}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-zinc-600">Kick-off</span>
-            <span className="text-zinc-300 font-medium">{format(new Date(fixture.date), "HH:mm")}</span>
+            <span className="text-zinc-300 font-medium">{safeDate(fixture.date, "HH:mm")}</span>
           </div>
           <div className="flex justify-between col-span-2">
             <span className="text-zinc-600">Expected Goals (xG)</span>
@@ -963,7 +1014,11 @@ function PlayerRow({ player }: { player: PlayerStat }) {
   );
 }
 
-function TabPlayers({ data }: { data: PlayersData | undefined }) {
+const UPCOMING_STATUSES = ["NS", "TBD", "CANC", "PST", "SUSP", "INT", "ABD", "AWD", "WO"];
+
+function TabPlayers({ data, fixture }: { data: PlayersData | undefined; fixture: Fixture }) {
+  const isUpcoming = UPCOMING_STATUSES.includes(fixture.status?.short ?? "");
+
   if (!data) {
     return (
       <div className="space-y-4">
@@ -975,13 +1030,20 @@ function TabPlayers({ data }: { data: PlayersData | undefined }) {
     );
   }
 
-  if (!data.available || data.teams.length === 0) {
+  if (!data.available || !Array.isArray(data.teams) || data.teams.length === 0) {
+    const message = isUpcoming
+      ? "Lineups not available yet."
+      : "Player statistics unavailable";
+    const subtext = isUpcoming
+      ? "Lineups are usually confirmed 1 hour before kick-off."
+      : "Player data is not available for this fixture.";
+
     return (
       <div className="space-y-4">
         <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
           <Users className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
-          <p className="text-zinc-500 text-sm font-medium">Player statistics unavailable</p>
-          <p className="text-zinc-700 text-xs mt-1">Player data is not yet available for this fixture.</p>
+          <p className="text-zinc-500 text-sm font-medium">{message}</p>
+          <p className="text-zinc-700 text-xs mt-1">{subtext}</p>
         </div>
       </div>
     );
@@ -1071,9 +1133,13 @@ export default function FixtureDetail() {
   const { data: h2hData } = useQuery({
     queryKey: ["fixture-h2h", id],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/fixture/${id}/h2h`);
-      if (!res.ok) throw new Error("H2H not available");
-      return res.json();
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}/h2h`);
+        if (!res.ok) return { h2h: [], available: false };
+        return res.json();
+      } catch {
+        return { h2h: [], available: false };
+      }
     },
     enabled: (activeTab === "h2h" || activeTab === "ai") && !!fixture,
     staleTime: 10 * 60 * 1000,
@@ -1082,9 +1148,13 @@ export default function FixtureDetail() {
   const { data: oddsData } = useQuery({
     queryKey: ["fixture-odds", id],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/fixture/${id}/odds`);
-      if (!res.ok) throw new Error("Odds not available");
-      return res.json();
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}/odds`);
+        if (!res.ok) return { available: false, odds: null };
+        return res.json();
+      } catch {
+        return { available: false, odds: null };
+      }
     },
     enabled: (activeTab === "odds" || activeTab === "ai" || activeTab === "overview") && !!fixture,
     staleTime: 5 * 60 * 1000,
@@ -1206,7 +1276,7 @@ export default function FixtureDetail() {
                 <div className="text-zinc-600 font-bold text-sm">VS</div>
                 <div className="flex items-center gap-1 mt-1 text-xs text-zinc-500">
                   <Clock className="w-3 h-3" />
-                  {format(new Date(fixture.date), "HH:mm")}
+                  {safeDate(fixture.date, "HH:mm")}
                 </div>
               </div>
             )}
@@ -1231,7 +1301,7 @@ export default function FixtureDetail() {
         {/* Date */}
         <div className="text-center mt-4">
           <span className="text-xs text-zinc-700">
-            {format(new Date(fixture.date), "EEEE, dd MMM yyyy")}
+            {safeDate(fixture.date, "EEEE, dd MMM yyyy")}
           </span>
         </div>
       </div>
@@ -1267,7 +1337,7 @@ export default function FixtureDetail() {
           {activeTab === "overview" && <TabOverview fixture={fixture} analysis={analysis} />}
           {activeTab === "stats" && <TabTeamStats fixture={fixture} stats={statsData} />}
           {activeTab === "h2h" && <TabH2H h2h={h2hData} fixture={fixture} />}
-          {activeTab === "players" && <TabPlayers data={playersData} />}
+          {activeTab === "players" && <TabPlayers data={playersData} fixture={fixture} />}
           {activeTab === "odds" && <TabOdds oddsData={oddsData} fixture={fixture} analysis={analysis} />}
           {activeTab === "ai" && <TabAI fixture={fixture} analysis={analysis} oddsData={oddsData} h2hData={h2hData} />}
         </motion.div>

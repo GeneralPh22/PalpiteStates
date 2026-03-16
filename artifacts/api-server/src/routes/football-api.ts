@@ -238,18 +238,26 @@ router.get("/fixture/:id/h2h", async (req, res) => {
     const awayId = item.teams.away.id;
 
     const { data, ok } = await apiFetch(
-      `/fixtures/headtohead?h2h=${homeId}-${awayId}&last=6`,
+      `/fixtures/headtohead?h2h=${homeId}-${awayId}&last=10`,
       STATS_TTL
     );
 
     if (ok && data?.response?.length > 0) {
       return res.json({
+        available: true,
         h2h: data.response.map((h: any) => ({
-          date: h.fixture.date,
-          homeTeam: { name: h.teams.home.name, logo: h.teams.home.logo },
-          awayTeam: { name: h.teams.away.name, logo: h.teams.away.logo },
-          score: { home: h.goals.home, away: h.goals.away },
-          status: h.fixture.status.short,
+          date: h.fixture.date ?? null,
+          homeTeam: { name: h.teams.home.name ?? "Home", logo: h.teams.home.logo ?? null },
+          awayTeam: { name: h.teams.away.name ?? "Away", logo: h.teams.away.logo ?? null },
+          score: {
+            home: h.goals.home ?? null,
+            away: h.goals.away ?? null,
+          },
+          status: h.fixture.status.short ?? "FT",
+          league: {
+            name: h.league.name ?? null,
+            logo: h.league.logo ?? null,
+          },
         })),
         demo: false,
       });
@@ -258,7 +266,7 @@ router.get("/fixture/:id/h2h", async (req, res) => {
     return res.json({ h2h: [], available: false });
   } catch (err: any) {
     console.error("[fixture/h2h]", err.message);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.json({ h2h: [], available: false });
   }
 });
 
