@@ -13,18 +13,25 @@ let apiSuspended = false;
 const SUSPENDED_CACHE_TTL = 5 * 60 * 1000;
 let lastSuspendedCheck = 0;
 
-async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok: boolean }> {
-  if (apiSuspended && Date.now() - lastSuspendedCheck < SUSPENDED_CACHE_TTL) {
-    return { data: null, ok: false };
-  }
+const LIVE_TTL = 30 * 1000;            // 30 seconds (for live matches)
 
+async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok: boolean; stale?: boolean }> {
   const cacheKey = path;
   const cached = cache.get(cacheKey);
+
+  // Serve fresh cache immediately if valid
   if (cached && Date.now() - cached.ts < ttl) return { data: cached.data, ok: true };
+
+  // If suspended, serve stale cache or fail
+  if (apiSuspended && Date.now() - lastSuspendedCheck < SUSPENDED_CACHE_TTL) {
+    if (cached) return { data: cached.data, ok: true, stale: true };
+    return { data: null, ok: false };
+  }
 
   const apiKey = process.env.API_FOOTBALL_KEY;
   if (!apiKey) {
     console.error("[api-football] ERROR: API_FOOTBALL_KEY environment variable is not set.");
+    if (cached) return { data: cached.data, ok: true, stale: true };
     return { data: null, ok: false };
   }
 
@@ -39,6 +46,7 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
     });
     if (!res.ok) {
       console.error(`[api-football] HTTP ${res.status} for ${path}`);
+      if (cached) return { data: cached.data, ok: true, stale: true };
       return { data: null, ok: false };
     }
     const data = await res.json();
@@ -52,6 +60,7 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
         lastSuspendedCheck = Date.now();
         if (isSuspended) console.warn(`[api-football] Account suspended.`);
       }
+      if (cached) return { data: cached.data, ok: true, stale: true };
       return { data: null, ok: false };
     }
 
@@ -61,6 +70,7 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
     return { data, ok: true };
   } catch (err: any) {
     console.error(`[api-football] fetch error for ${path}:`, err.message);
+    if (cached) return { data: cached.data, ok: true, stale: true };
     return { data: null, ok: false };
   }
 }
@@ -155,22 +165,23 @@ function mapFixture(item: any) {
 router.get("/matches-today", async (_req, res) => {
   try {
     const today = new Date().toISOString().split("T")[0];
-    const { data, ok } = await apiFetch(`/fixtures?date=${today}`, MATCH_TTL);
+    const { data, ok, stale } = await apiFetch(`/fixtures?date=${today}`, MATCH_TTL);
 
     if (ok && data && (data.results ?? 0) > 0) {
       const matches = (data.response ?? []).map(mapFixture);
-      return res.json({ total: matches.length, matches, demo: false });
+      return res.json({ total: matches.length, matches, demo: false, stale: stale ?? false });
     }
 
     return res.json({
       total: 0,
       matches: [],
       demo: false,
+      stale: false,
       apiStatus: apiSuspended ? "suspended" : "unavailable",
     });
   } catch (err: any) {
     console.error("[matches-today]", err.message);
-    return res.json({ total: 0, matches: [], demo: false });
+    return res.json({ total: 0, matches: [], demo: false, stale: false });
   }
 });
 
