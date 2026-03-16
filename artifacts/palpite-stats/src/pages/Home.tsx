@@ -55,12 +55,17 @@ function useTodayMatches() {
     queryKey: ["matches-today", today],
     queryFn: async () => {
       const res = await fetch(`${BASE}/api/matches-today`);
-      if (!res.ok) throw new Error("Failed to fetch matches");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     },
     staleTime: 30 * 1000,
-    refetchInterval: 30 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchInterval: (query) =>
+      query.state.status === "error" ? 10 * 1000 : 30 * 1000,
+    refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
+    retry: 3,
+    retryDelay: 10 * 1000,
     placeholderData: keepPreviousData,
   });
 }
