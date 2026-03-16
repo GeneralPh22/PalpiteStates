@@ -275,11 +275,32 @@ router.get("/matches-today", async (_req, res) => {
       return res.json({ total: matches.length, matches, demo: false, stale: stale ?? false, isUpcoming: false });
     }
 
-    // ── Fallback: no matches today → try the next 3 days (free-plan compatible) ─
-    // NOTE: /fixtures?next=N requires a paid plan — always use date-based queries
-    console.log(`[matches-today] No fixtures today — scanning next 3 days for upcoming fixtures`);
+    // ── Fallback 1: try ?next=20 (works on paid plans) ───────────────────────
+    console.log(`[matches-today] No fixtures today — trying /fixtures?next=20`);
+    const { data: nextData, ok: nextOk, stale: nextStale } = await apiFetch(`/fixtures?next=20`, FIXTURE_LIST_TTL);
+    console.log(`[matches-today] ?next=20 — ok: ${nextOk}, results: ${nextData?.results ?? 0}`);
+
+    if (nextOk && nextData && (nextData.results ?? 0) > 0) {
+      const raw = nextData.response ?? [];
+      const matches = raw
+        .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
+        .filter(Boolean);
+      console.log(`[matches-today] Found ${matches.length} upcoming fixtures via ?next=20`);
+      return res.json({
+        total: matches.length,
+        matches,
+        demo: false,
+        stale: nextStale ?? false,
+        isUpcoming: true,
+        apiStatus: "upcoming_fallback",
+      });
+    }
+
+    // ── Fallback 2: scan next 3 days by date (free-plan compatible) ───────────
+    console.log(`[matches-today] ?next=20 empty or unavailable — scanning next 3 days by date`);
 
     for (let daysAhead = 1; daysAhead <= 3; daysAhead++) {
+      if (apiSuspended) break; // quota exhausted — stop burning requests
       const futureDate = new Date();
       futureDate.setDate(futureDate.getDate() + daysAhead);
       const futureDateStr = futureDate.toISOString().split("T")[0];
@@ -305,15 +326,16 @@ router.get("/matches-today", async (_req, res) => {
       }
     }
 
-    // All fallback dates returned empty
-    console.warn(`[matches-today] No fixtures found for today or next 3 days — API status: ${apiSuspended ? "daily_limit" : "unavailable"}`);
+    // All attempts returned empty
+    const finalStatus = apiSuspended ? "daily_limit" : "unavailable";
+    console.warn(`[matches-today] No fixtures found anywhere — API status: ${finalStatus}`);
     return res.json({
       total: 0,
       matches: [],
       demo: false,
       stale: false,
       isUpcoming: false,
-      apiStatus: apiSuspended ? "daily_limit" : "unavailable",
+      apiStatus: finalStatus,
     });
   } catch (err: any) {
     console.error("[matches-today] Unhandled error:", err.message);

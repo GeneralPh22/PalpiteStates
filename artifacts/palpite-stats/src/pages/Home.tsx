@@ -69,8 +69,12 @@ function useTodayMatches() {
     },
     staleTime: 5 * 60 * 1000,          // 5 minutes – matches backend FIXTURE_LIST_TTL
     gcTime: 15 * 60 * 1000,
-    refetchInterval: (query) =>
-      query.state.status === "error" ? 15 * 1000 : 5 * 60 * 1000,
+    refetchInterval: (query) => {
+      if (query.state.status === "error") return 15 * 1000;
+      // Retry every 10 seconds when no matches are available (quota reset / API recovering)
+      if ((query.state.data as any)?.total === 0) return 10 * 1000;
+      return 5 * 60 * 1000; // 5 minutes once we have match data
+    },
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
     retry: 3,
@@ -484,21 +488,23 @@ export default function Home() {
           </div>
         ) : totalFiltered === 0 ? (
           <div className="p-12 text-center bg-[#09090b] rounded-xl border border-white/[0.06] flex flex-col items-center">
-            <Target className="w-12 h-12 text-muted-foreground mb-4" />
-            <h3 className="text-xl font-medium text-white mb-2">
-              {allMatches.length === 0
-                ? isUpcoming
-                  ? "No matches found for today. Showing upcoming matches."
-                  : "No matches scheduled today"
-                : "No matches for this league"}
-            </h3>
-            <p className="text-muted-foreground text-sm">
-              {allMatches.length === 0
-                ? isUpcoming
-                  ? "These are the next scheduled fixtures across all competitions."
-                  : "Check back later or browse other dates."
-                : "Select a different league or view all."}
-            </p>
+            {allMatches.length === 0 ? (
+              <>
+                <Loader2 className="w-10 h-10 text-primary mb-4 animate-spin" />
+                <h3 className="text-xl font-medium text-white mb-2">
+                  No matches available – retrying...
+                </h3>
+                <p className="text-muted-foreground text-sm">
+                  Connecting to match data. This refreshes automatically every 10 seconds.
+                </p>
+              </>
+            ) : (
+              <>
+                <Target className="w-12 h-12 text-muted-foreground mb-4" />
+                <h3 className="text-xl font-medium text-white mb-2">No matches for this league</h3>
+                <p className="text-muted-foreground text-sm">Select a different league or view all.</p>
+              </>
+            )}
           </div>
         ) : (
           <div>
