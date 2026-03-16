@@ -542,6 +542,55 @@ router.get("/fixture-analysis", async (req, res) => {
   }
 });
 
+// ── fixture/:id/players ────────────────────────────────────────────────────────
+router.get("/fixture/:id/players", async (req, res) => {
+  try {
+    const fixtureId = Number(req.params.id);
+    if (isNaN(fixtureId)) return res.status(400).json({ error: "Invalid fixture ID" });
+
+    const { data, ok } = await apiFetch(`/fixtures/players?fixture=${fixtureId}`, STATS_TTL);
+
+    if (ok && data?.response?.length > 0) {
+      const teams = (data.response as any[]).map((teamData: any) => ({
+        team: {
+          id: teamData.team.id,
+          name: teamData.team.name,
+          logo: teamData.team.logo,
+        },
+        players: ((teamData.players ?? []) as any[])
+          .map((p: any) => {
+            const s = p.statistics?.[0] ?? {};
+            return {
+              id: p.player.id,
+              name: p.player.name,
+              photo: p.player.photo ?? null,
+              position: s.games?.position ?? null,
+              minutes: s.games?.minutes ?? null,
+              rating: s.games?.rating ? parseFloat(s.games.rating).toFixed(1) : null,
+              goals: s.goals?.total ?? 0,
+              assists: s.goals?.assists ?? 0,
+              shots: s.shots?.total ?? 0,
+              shotsOnTarget: s.shots?.on ?? 0,
+              passes: s.passes?.total ?? 0,
+              keyPasses: s.passes?.key ?? 0,
+              tackles: s.tackles?.total ?? 0,
+              yellowCards: s.cards?.yellow ?? 0,
+              redCards: s.cards?.red ?? 0,
+            };
+          })
+          .filter((p: any) => p.minutes !== null && p.minutes > 0)
+          .sort((a: any, b: any) => (b.minutes ?? 0) - (a.minutes ?? 0)),
+      }));
+      return res.json({ available: true, teams });
+    }
+
+    return res.json({ available: false, teams: [] });
+  } catch (err: any) {
+    console.error("[fixture/players]", err.message);
+    return res.json({ available: false, teams: [] });
+  }
+});
+
 // ── api-status ─────────────────────────────────────────────────────────────────
 router.get("/api-status", (_req, res) => {
   res.json({ suspended: apiSuspended, cacheSize: cache.size });
