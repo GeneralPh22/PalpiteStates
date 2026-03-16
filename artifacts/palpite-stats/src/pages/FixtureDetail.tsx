@@ -903,190 +903,188 @@ function TabAI({ fixture, analysis, oddsData, h2hData }: {
   );
 }
 
-// ── TAB: Players ──────────────────────────────────────────────────────────────
-interface PlayerStat {
+// ── TAB: Players (Squad) ───────────────────────────────────────────────────────
+interface SquadPlayer {
   id: number;
   name: string;
   photo: string | null;
-  position: string | null;
-  minutes: number | null;
-  rating: string | null;
+  age: number | null;
+  position: string;
+  nationality: string | null;
+  appearances: number;
   goals: number;
   assists: number;
-  shots: number;
-  shotsOnTarget: number;
-  passes: number;
-  keyPasses: number;
-  tackles: number;
-  yellowCards: number;
-  redCards: number;
 }
-interface PlayersTeam {
+interface SquadTeam {
   team: { id: number; name: string; logo: string };
-  players: PlayerStat[];
+  players: SquadPlayer[];
 }
 interface PlayersData {
   available: boolean;
-  teams: PlayersTeam[];
+  teams: SquadTeam[];
 }
 
-function positionStyle(pos: string | null): { label: string; className: string } {
-  const p = (pos ?? "").toUpperCase();
-  if (p === "G") return { label: "GK", className: "bg-amber-500/20 text-amber-400" };
-  if (p === "D") return { label: "DEF", className: "bg-blue-500/20 text-blue-400" };
-  if (p === "M") return { label: "MID", className: "bg-green-500/20 text-green-400" };
-  if (p === "F") return { label: "FWD", className: "bg-red-500/20 text-red-400" };
-  return { label: pos ?? "–", className: "bg-zinc-700/50 text-zinc-400" };
+function squadPositionBadge(pos: string): { label: string; className: string } {
+  const p = pos.toLowerCase();
+  if (p.includes("goalkeeper")) return { label: "GK",  className: "bg-amber-500/20 text-amber-400 border-amber-500/20" };
+  if (p.includes("defender"))   return { label: "DEF", className: "bg-blue-500/20  text-blue-400  border-blue-500/20" };
+  if (p.includes("midfielder")) return { label: "MID", className: "bg-green-500/20 text-green-400 border-green-500/20" };
+  return                               { label: "FWD", className: "bg-red-500/20   text-red-400   border-red-500/20" };
 }
 
-function PlayerRow({ player }: { player: PlayerStat }) {
-  const pos = positionStyle(player.position);
-  const rating = player.rating ? parseFloat(player.rating) : null;
-  const ratingColor =
-    rating === null ? "" : rating >= 7.5 ? "text-primary" : rating >= 6.5 ? "text-zinc-300" : "text-zinc-500";
+function SquadPlayerRow({ player }: { player: SquadPlayer }) {
+  const badge = squadPositionBadge(player.position);
+  const hasStats = player.appearances > 0 || player.goals > 0 || player.assists > 0;
 
   return (
-    <div className="flex items-start gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.04] hover:bg-white/[0.04] transition-colors">
-      <div className="flex-shrink-0 w-10 h-10 rounded-full bg-white/[0.06] border border-white/[0.08] overflow-hidden">
+    <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/[0.02] border border-white/[0.04] hover:bg-white/[0.04] transition-colors">
+      {/* Photo */}
+      <div className="flex-shrink-0 w-9 h-9 rounded-full bg-white/[0.06] border border-white/[0.08] overflow-hidden">
         {player.photo ? (
           <img src={player.photo} alt={player.name} className="w-full h-full object-cover" loading="lazy" />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-zinc-600">
-            <Users className="w-4 h-4" />
+            <Users className="w-3.5 h-3.5" />
           </div>
         )}
       </div>
 
+      {/* Name + meta */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between gap-2 mb-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-sm font-semibold text-white truncate">{player.name}</span>
-            <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded-md flex-shrink-0", pos.className)}>
-              {pos.label}
-            </span>
-          </div>
-          {rating !== null && (
-            <span className={cn("text-sm font-bold flex-shrink-0 tabular-nums", ratingColor)}>
-              {player.rating}
-            </span>
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="text-sm font-semibold text-white truncate leading-tight">{player.name}</span>
+          <span className={cn(
+            "text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0",
+            badge.className
+          )}>
+            {badge.label}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-zinc-600">
+          {player.age !== null && <span>{player.age} yrs</span>}
+          {player.nationality && (
+            <>
+              {player.age !== null && <span className="text-zinc-800">·</span>}
+              <span>{player.nationality}</span>
+            </>
           )}
         </div>
+      </div>
 
-        <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 mb-2">
-          <Clock className="w-3 h-3" />
-          <span>{player.minutes}'</span>
-          {player.yellowCards > 0 && (
-            <span className="w-2 h-3 bg-yellow-400 rounded-[2px] inline-block ml-1" title="Yellow card" />
-          )}
-          {player.redCards > 0 && (
-            <span className="w-2 h-3 bg-red-500 rounded-[2px] inline-block" title="Red card" />
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-1.5">
-          {(
-            [
-              { label: "G", value: player.goals, highlight: player.goals > 0 },
-              { label: "A", value: player.assists, highlight: player.assists > 0 },
-              { label: "Sh", value: player.shots },
-              { label: "SOT", value: player.shotsOnTarget, highlight: player.shotsOnTarget > 0 },
-              { label: "Pass", value: player.passes },
-              { label: "KP", value: player.keyPasses, highlight: player.keyPasses > 0 },
-              { label: "Tkl", value: player.tackles },
-            ] as { label: string; value: number; highlight?: boolean }[]
-          ).map(({ label, value, highlight }) => (
-            <span
-              key={label}
-              className={cn(
-                "text-[10px] px-1.5 py-0.5 rounded-md font-medium",
-                highlight
-                  ? "bg-primary/20 text-primary border border-primary/20"
-                  : "bg-white/[0.04] text-zinc-500 border border-white/[0.04]"
-              )}
-            >
-              {label}:{" "}
-              <span className={highlight ? "text-primary font-bold" : "text-zinc-400"}>{value}</span>
-            </span>
-          ))}
-        </div>
+      {/* Season stats */}
+      <div className="flex items-center gap-3 flex-shrink-0 text-right">
+        {hasStats ? (
+          <>
+            <div className="text-center">
+              <div className="text-xs font-bold text-zinc-300 tabular-nums">{player.appearances}</div>
+              <div className="text-[9px] text-zinc-700 uppercase">Apps</div>
+            </div>
+            <div className="text-center">
+              <div className={cn("text-xs font-bold tabular-nums", player.goals > 0 ? "text-primary" : "text-zinc-600")}>{player.goals}</div>
+              <div className="text-[9px] text-zinc-700 uppercase">Gls</div>
+            </div>
+            <div className="text-center">
+              <div className={cn("text-xs font-bold tabular-nums", player.assists > 0 ? "text-blue-400" : "text-zinc-600")}>{player.assists}</div>
+              <div className="text-[9px] text-zinc-700 uppercase">Ast</div>
+            </div>
+          </>
+        ) : (
+          <span className="text-[10px] text-zinc-700 italic">No stats</span>
+        )}
       </div>
     </div>
   );
 }
 
-const UPCOMING_STATUSES = ["NS", "TBD", "CANC", "PST", "SUSP", "INT", "ABD", "AWD", "WO"];
+function SquadPositionGroup({ position, players }: { position: string; players: SquadPlayer[] }) {
+  if (players.length === 0) return null;
+  const badge = squadPositionBadge(position);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 px-1 mb-1">
+        <span className={cn("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider", badge.className)}>
+          {badge.label === "GK" ? "Goalkeepers" : badge.label === "DEF" ? "Defenders" : badge.label === "MID" ? "Midfielders" : "Forwards"}
+        </span>
+        <span className="text-[9px] text-zinc-700">{players.length}</span>
+      </div>
+      {players.map((p) => <SquadPlayerRow key={p.id} player={p} />)}
+    </div>
+  );
+}
 
-function TabPlayers({ data, fixture }: { data: PlayersData | undefined; fixture: Fixture }) {
-  const isUpcoming = UPCOMING_STATUSES.includes(fixture.status?.short ?? "");
-
+function TabPlayers({ data }: { data: PlayersData | undefined }) {
   if (!data) {
     return (
-      <div className="space-y-4">
-        <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
-          <Loader2 className="w-8 h-8 text-zinc-700 mx-auto mb-3 animate-spin" />
-          <p className="text-zinc-500 text-sm font-medium">Loading player statistics...</p>
-        </div>
+      <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
+        <Loader2 className="w-8 h-8 text-zinc-700 mx-auto mb-3 animate-spin" />
+        <p className="text-zinc-500 text-sm font-medium">Loading squad data...</p>
       </div>
     );
   }
 
   if (!data.available || !Array.isArray(data.teams) || data.teams.length === 0) {
-    const message = isUpcoming
-      ? "Lineups not available yet."
-      : "Player statistics unavailable";
-    const subtext = isUpcoming
-      ? "Lineups are usually confirmed 1 hour before kick-off."
-      : "Player data is not available for this fixture.";
-
     return (
-      <div className="space-y-4">
-        <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
-          <Users className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
-          <p className="text-zinc-500 text-sm font-medium">{message}</p>
-          <p className="text-zinc-700 text-xs mt-1">{subtext}</p>
-        </div>
+      <div className="p-12 text-center bg-[#09090b] border border-white/[0.06] rounded-2xl">
+        <Users className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
+        <p className="text-zinc-500 text-sm font-medium">Player squad data is updating.</p>
+        <p className="text-zinc-700 text-xs mt-1">Squad information will be available shortly.</p>
       </div>
     );
   }
 
-  const sectionLabels = ["HOME TEAM PLAYERS", "AWAY TEAM PLAYERS"];
+  const sectionLabels = ["HOME SQUAD", "AWAY SQUAD"];
+  const positionGroups = ["Goalkeeper", "Defender", "Midfielder", "Forward"] as const;
 
   return (
     <div className="space-y-6">
-      {data.teams.map((teamData, idx) => (
-        <div
-          key={teamData.team.id}
-          className="bg-[#09090b] border border-white/[0.07] rounded-2xl overflow-hidden"
-        >
-          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06] bg-white/[0.02]">
-            {teamData.team.logo && (
-              <img
-                src={teamData.team.logo}
-                alt={teamData.team.name}
-                className="w-6 h-6 object-contain"
-                loading="lazy"
-              />
-            )}
-            <div>
-              <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">
-                {sectionLabels[idx] ?? "PLAYERS"}
-              </p>
-              <p className="text-sm font-semibold text-white leading-tight">{teamData.team.name}</p>
-            </div>
-            <span className="ml-auto text-[10px] font-medium text-zinc-600 bg-white/[0.04] px-2 py-0.5 rounded-full">
-              {teamData.players.length} players
-            </span>
-          </div>
+      {data.teams.map((teamData, idx) => {
+        const byPosition = Object.fromEntries(
+          positionGroups.map((pos) => [
+            pos,
+            teamData.players.filter((p) => p.position === pos),
+          ])
+        ) as Record<string, SquadPlayer[]>;
 
-          <div className="p-3 space-y-2">
-            {teamData.players.length === 0 ? (
-              <p className="text-zinc-600 text-xs text-center py-6">No player data available</p>
-            ) : (
-              teamData.players.map((player) => <PlayerRow key={player.id} player={player} />)
-            )}
+        return (
+          <div key={teamData.team.id} className="bg-[#09090b] border border-white/[0.07] rounded-2xl overflow-hidden">
+            {/* Team header */}
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06] bg-white/[0.02]">
+              {teamData.team.logo && (
+                <img src={teamData.team.logo} alt={teamData.team.name} className="w-6 h-6 object-contain" loading="lazy" />
+              )}
+              <div>
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">{sectionLabels[idx] ?? "SQUAD"}</p>
+                <p className="text-sm font-semibold text-white leading-tight">{teamData.team.name}</p>
+              </div>
+              <span className="ml-auto text-[10px] font-medium text-zinc-600 bg-white/[0.04] px-2 py-0.5 rounded-full">
+                {teamData.players.length} players
+              </span>
+            </div>
+
+            {/* Column headers */}
+            <div className="flex items-center px-3 pt-2 pb-1">
+              <div className="w-9 flex-shrink-0" />
+              <div className="flex-1 pl-3" />
+              <div className="flex items-center gap-3 flex-shrink-0 text-[9px] text-zinc-700 uppercase tracking-wider pr-0.5">
+                <span className="w-7 text-center">Apps</span>
+                <span className="w-5 text-center">Gls</span>
+                <span className="w-5 text-center">Ast</span>
+              </div>
+            </div>
+
+            {/* Players grouped by position */}
+            <div className="p-3 space-y-4">
+              {teamData.players.length === 0 ? (
+                <p className="text-zinc-600 text-xs text-center py-6">No squad data available</p>
+              ) : (
+                positionGroups.map((pos) => (
+                  <SquadPositionGroup key={pos} position={pos} players={byPosition[pos] ?? []} />
+                ))
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1190,10 +1188,10 @@ export default function FixtureDetail() {
   });
 
   const { data: playersData } = useQuery<PlayersData>({
-    queryKey: ["fixture-players", id],
+    queryKey: ["fixture-squad", id],
     queryFn: async () => {
       try {
-        const res = await fetch(`${BASE}/api/fixture/${id}/players`);
+        const res = await fetch(`${BASE}/api/fixture/${id}/squad`);
         if (!res.ok) return { available: false, teams: [] };
         return res.json();
       } catch {
@@ -1201,8 +1199,8 @@ export default function FixtureDetail() {
       }
     },
     enabled: activeTab === "players" && !!fixture,
-    staleTime: 5 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
+    staleTime: 24 * 60 * 60 * 1000,
+    gcTime: 25 * 60 * 60 * 1000,
   });
 
   if (fixtureLoading) {
@@ -1395,7 +1393,7 @@ export default function FixtureDetail() {
               case "overview": return <TabOverview fixture={fixture} analysis={analysis} />;
               case "stats":    return <TabTeamStats fixture={fixture} stats={statsData} />;
               case "h2h":      return <TabH2H h2h={h2hData} fixture={fixture} />;
-              case "players":  return <TabPlayers data={playersData} fixture={fixture} />;
+              case "players":  return <TabPlayers data={playersData} />;
               case "odds":     return <TabOdds oddsData={oddsData} fixture={fixture} analysis={analysis} />;
               case "ai":       return <TabAI fixture={fixture} analysis={analysis} oddsData={oddsData} h2hData={h2hData} />;
               default:         return <TabOverview fixture={fixture} analysis={analysis} />;

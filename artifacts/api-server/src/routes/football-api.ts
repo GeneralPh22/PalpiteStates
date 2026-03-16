@@ -8,6 +8,7 @@ const cache = new Map<string, { data: unknown; ts: number }>();
 const ODDS_TTL = 5 * 60 * 1000;       // 5 minutes
 const STATS_TTL = 10 * 60 * 1000;     // 10 minutes
 const MATCH_TTL = 2 * 60 * 1000;      // 2 minutes
+const SQUAD_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 let apiSuspended = false;
 const SUSPENDED_CACHE_TTL = 5 * 60 * 1000;
@@ -596,6 +597,102 @@ router.get("/fixture/:id/players", async (req, res) => {
     return res.json({ available: false, teams: [] });
   } catch (err: any) {
     console.error("[fixture/players]", err.message);
+    return res.json({ available: false, teams: [] });
+  }
+});
+
+// ── fixture/:id/squad ──────────────────────────────────────────────────────────
+router.get("/fixture/:id/squad", async (req, res) => {
+  try {
+    const fixtureId = Number(req.params.id);
+    if (isNaN(fixtureId)) return res.json({ available: false, teams: [] });
+
+    // Resolve team IDs from the fixture
+    const { data: fixData, ok: fixOk } = await apiFetch(`/fixtures?id=${fixtureId}`, MATCH_TTL);
+    if (!fixOk || !fixData?.response?.[0]) return res.json({ available: false, teams: [] });
+
+    const item = fixData.response[0];
+    const homeId: number = item.teams.home.id;
+    const awayId: number = item.teams.away.id;
+
+    // Determine active season (try current year's start; European 2025-26 = season 2025)
+    const season = new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1;
+
+    // Fetch squads + season stats for both teams in parallel
+    const [homeSquadRes, awaySquadRes, homeStatsRes, awayStatsRes] = await Promise.all([
+      apiFetch(`/players/squads?team=${homeId}`, SQUAD_TTL),
+      apiFetch(`/players/squads?team=${awayId}`, SQUAD_TTL),
+      apiFetch(`/players?team=${homeId}&season=${season}`, SQUAD_TTL),
+      apiFetch(`/players?team=${awayId}&season=${season}`, SQUAD_TTL),
+    ]);
+
+    const positionOrder = (pos: string): number => {
+      const p = pos.toLowerCase();
+      if (p.includes("goalkeeper")) return 0;
+      if (p.includes("defender"))   return 1;
+      if (p.includes("midfielder")) return 2;
+      return 3; // Forward / Attacker
+    };
+
+    const positionLabel = (pos: string): string => {
+      const p = pos.toLowerCase();
+      if (p.includes("goalkeeper")) return "Goalkeeper";
+      if (p.includes("defender"))   return "Defender";
+      if (p.includes("midfielder")) return "Midfielder";
+      if (p.includes("forward") || p.includes("attacker")) return "Forward";
+      return pos;
+    };
+
+    const buildStatsMap = (statsRes: { data: any; ok: boolean }): Map<number, any> => {
+      const map = new Map<number, any>();
+      if (!statsRes.ok || !statsRes.data?.response) return map;
+      for (const entry of statsRes.data.response as any[]) {
+        if (entry.player?.id) map.set(entry.player.id, entry);
+      }
+      return map;
+    };
+
+    const mapTeam = (
+      teamRaw: any,
+      squadRes: { data: any; ok: boolean },
+      statsRes: { data: any; ok: boolean }
+    ) => {
+      const squadList: any[] = squadRes.ok ? (squadRes.data?.response?.[0]?.players ?? []) : [];
+      const statsMap = buildStatsMap(statsRes);
+
+      const players = squadList
+        .map((sp: any) => {
+          const entry = statsMap.get(sp.id);
+          const pStats = entry?.statistics?.[0] ?? {};
+          return {
+            id: sp.id,
+            name: sp.name ?? "Unknown",
+            photo: sp.photo ?? null,
+            age: sp.age ?? null,
+            position: positionLabel(sp.position ?? ""),
+            nationality: entry?.player?.nationality ?? null,
+            appearances: pStats.games?.appearances ?? 0,
+            goals: pStats.goals?.total ?? 0,
+            assists: pStats.goals?.assists ?? 0,
+          };
+        })
+        .sort((a: any, b: any) => positionOrder(a.position) - positionOrder(b.position));
+
+      return {
+        team: { id: teamRaw.id, name: teamRaw.name, logo: teamRaw.logo },
+        players,
+      };
+    };
+
+    const teams = [
+      mapTeam(item.teams.home, homeSquadRes, homeStatsRes),
+      mapTeam(item.teams.away, awaySquadRes, awayStatsRes),
+    ];
+
+    const hasAny = teams.some((t) => t.players.length > 0);
+    return res.json({ available: hasAny, teams });
+  } catch (err: any) {
+    console.error("[fixture/squad]", err.message);
     return res.json({ available: false, teams: [] });
   }
 });
