@@ -23,11 +23,18 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
   if (cached && Date.now() - cached.ts < ttl) return { data: cached.data, ok: true };
 
   const apiKey = process.env.API_FOOTBALL_KEY;
-  if (!apiKey) return { data: null, ok: false };
+  if (!apiKey) {
+    console.error("[api-football] ERROR: API_FOOTBALL_KEY environment variable is not set.");
+    return { data: null, ok: false };
+  }
 
   try {
     const res = await fetch(`${API_BASE}${path}`, {
-      headers: { "x-apisports-key": apiKey },
+      method: "GET",
+      headers: {
+        "x-apisports-key": apiKey,
+        "x-rapidapi-host": "v3.football.api-sports.io",
+      },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) {
