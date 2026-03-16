@@ -1,4 +1,10 @@
 import { Router, type IRouter } from "express";
+import {
+  getFixturesFromDB,
+  saveFixturesToDB,
+  isDBFresh,
+  type CachedFixture,
+} from "../lib/fixture-db.js";
 
 const router: IRouter = Router();
 
@@ -255,91 +261,174 @@ function mapFixture(item: any) {
   };
 }
 
+// ── Background refresh state ───────────────────────────────────────────────
+let bgRefreshRunning = false;
+let lastBgRefresh = 0;
+const BG_REFRESH_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Fetches fixtures from the API and saves them to the DB.
+ * Tries ?next=20 first, then date-based fallback.
+ * Never throws — errors are logged and ignored.
+ */
+async function fetchAndCacheFixtures(): Promise<number> {
+  const today = new Date().toISOString().split("T")[0];
+  let saved = 0;
+
+  // Try today's date first
+  const { data: todayData, ok: todayOk } = await apiFetch(`/fixtures?date=${today}`, FIXTURE_LIST_TTL);
+  if (todayOk && todayData && (todayData.results ?? 0) > 0) {
+    await saveFixturesToDB(todayData.response ?? []);
+    saved += todayData.results ?? 0;
+  }
+
+  // Try ?next=20 (works on paid plans — plan error is handled gracefully)
+  if (!apiSuspended) {
+    const { data: nextData, ok: nextOk } = await apiFetch(`/fixtures?next=20`, FIXTURE_LIST_TTL);
+    if (nextOk && nextData && (nextData.results ?? 0) > 0) {
+      await saveFixturesToDB(nextData.response ?? []);
+      saved += nextData.results ?? 0;
+    }
+  }
+
+  // Date-based fallback for the next 3 days
+  for (let d = 1; d <= 3; d++) {
+    if (apiSuspended) break;
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + d);
+    const dateStr = futureDate.toISOString().split("T")[0];
+    const { data: futData, ok: futOk } = await apiFetch(`/fixtures?date=${dateStr}`, FIXTURE_LIST_TTL);
+    if (futOk && futData && (futData.results ?? 0) > 0) {
+      await saveFixturesToDB(futData.response ?? []);
+      saved += futData.results ?? 0;
+    }
+  }
+
+  return saved;
+}
+
+/** Schedule background refresh — starts immediately, then every 10 minutes. */
+function scheduleBackgroundRefresh() {
+  async function run() {
+    if (bgRefreshRunning) return;
+    bgRefreshRunning = true;
+    const start = Date.now();
+    try {
+      console.log("[bg-refresh] Starting fixture refresh...");
+      const count = await fetchAndCacheFixtures();
+      lastBgRefresh = Date.now();
+      console.log(`[bg-refresh] Done — fetched ${count} fixtures in ${Date.now() - start}ms`);
+    } catch (err: any) {
+      console.error("[bg-refresh] Error:", err.message);
+    } finally {
+      bgRefreshRunning = false;
+    }
+  }
+
+  // Run once immediately on startup, then every 10 minutes
+  setTimeout(run, 2000);
+  setInterval(run, BG_REFRESH_INTERVAL);
+}
+
+scheduleBackgroundRefresh();
+
 // ── matches-today ──────────────────────────────────────────────────────────────
 router.get("/matches-today", async (_req, res) => {
   try {
-    // Date in YYYY-MM-DD format as required by API-Football
-    const today = new Date().toISOString().split("T")[0];
+    // ── Step 1: Check DB for fresh cached fixtures ─────────────────────────
+    const { fixtures: dbFixtures, ageMs, count: dbCount } = await getFixturesFromDB();
+    const dbIsFresh = isDBFresh(ageMs);
 
-    console.log(`[matches-today] Fetching fixtures for date: ${today}`);
-    const { data, ok, stale } = await apiFetch(`/fixtures?date=${today}`, FIXTURE_LIST_TTL);
-
-    console.log(`[matches-today] Response — ok: ${ok}, results: ${data?.results ?? 0}, stale: ${stale ?? false}`);
-
-    if (ok && data && (data.results ?? 0) > 0) {
-      const raw = data.response ?? [];
-      const matches = raw
-        .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
-        .filter(Boolean);
-      console.log(`[matches-today] Mapped ${matches.length} fixtures for today`);
-      return res.json({ total: matches.length, matches, demo: false, stale: stale ?? false, isUpcoming: false });
-    }
-
-    // ── Fallback 1: try ?next=20 (works on paid plans) ───────────────────────
-    console.log(`[matches-today] No fixtures today — trying /fixtures?next=20`);
-    const { data: nextData, ok: nextOk, stale: nextStale } = await apiFetch(`/fixtures?next=20`, FIXTURE_LIST_TTL);
-    console.log(`[matches-today] ?next=20 — ok: ${nextOk}, results: ${nextData?.results ?? 0}`);
-
-    if (nextOk && nextData && (nextData.results ?? 0) > 0) {
-      const raw = nextData.response ?? [];
-      const matches = raw
-        .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
-        .filter(Boolean);
-      console.log(`[matches-today] Found ${matches.length} upcoming fixtures via ?next=20`);
+    if (dbIsFresh && dbCount > 0) {
+      console.log(`[matches-today] Serving ${dbCount} fixtures from DB cache (age: ${Math.round(ageMs / 1000)}s)`);
+      const now = new Date();
+      const isUpcoming = dbFixtures.every(f => new Date(f.date) > now);
       return res.json({
-        total: matches.length,
-        matches,
+        total: dbCount,
+        matches: dbFixtures,
         demo: false,
-        stale: nextStale ?? false,
-        isUpcoming: true,
-        apiStatus: "upcoming_fallback",
+        stale: false,
+        isUpcoming,
+        apiStatus: "db_cache",
       });
     }
 
-    // ── Fallback 2: scan next 3 days by date (free-plan compatible) ───────────
-    console.log(`[matches-today] ?next=20 empty or unavailable — scanning next 3 days by date`);
+    if (dbCount > 0) {
+      console.log(`[matches-today] DB has ${dbCount} stale fixtures (age: ${Math.round(ageMs / 1000)}s) — will try API refresh`);
+    }
 
-    for (let daysAhead = 1; daysAhead <= 3; daysAhead++) {
-      if (apiSuspended) break; // quota exhausted — stop burning requests
-      const futureDate = new Date();
-      futureDate.setDate(futureDate.getDate() + daysAhead);
-      const futureDateStr = futureDate.toISOString().split("T")[0];
+    // ── Step 2: Try API (today + ?next=20 + date fallback) ────────────────
+    const today = new Date().toISOString().split("T")[0];
+    console.log(`[matches-today] Fetching fresh fixtures for date: ${today}`);
 
-      const { data: futData, ok: futOk, stale: futStale } = await apiFetch(`/fixtures?date=${futureDateStr}`, FIXTURE_LIST_TTL);
-      console.log(`[matches-today] +${daysAhead}d (${futureDateStr}) — ok: ${futOk}, results: ${futData?.results ?? 0}`);
+    const { data, ok, stale } = await apiFetch(`/fixtures?date=${today}`, FIXTURE_LIST_TTL);
+    console.log(`[matches-today] Today's fixtures — ok: ${ok}, results: ${data?.results ?? 0}, stale: ${stale ?? false}`);
 
+    if (ok && data && (data.results ?? 0) > 0) {
+      const raw: any[] = data.response ?? [];
+      saveFixturesToDB(raw).catch(() => {}); // async — don't block response
+      const matches = raw
+        .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
+        .filter(Boolean);
+      console.log(`[matches-today] Returning ${matches.length} live fixtures`);
+      return res.json({ total: matches.length, matches, demo: false, stale: false, isUpcoming: false, apiStatus: "api_live" });
+    }
+
+    // Fallback 1: ?next=20
+    console.log(`[matches-today] No today fixtures — trying /fixtures?next=20`);
+    const { data: nextData, ok: nextOk } = await apiFetch(`/fixtures?next=20`, FIXTURE_LIST_TTL);
+    console.log(`[matches-today] ?next=20 — ok: ${nextOk}, results: ${nextData?.results ?? 0}`);
+
+    if (nextOk && nextData && (nextData.results ?? 0) > 0) {
+      const raw: any[] = nextData.response ?? [];
+      saveFixturesToDB(raw).catch(() => {});
+      const matches = raw
+        .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
+        .filter(Boolean);
+      return res.json({ total: matches.length, matches, demo: false, stale: false, isUpcoming: true, apiStatus: "api_next" });
+    }
+
+    // Fallback 2: next 3 days by date
+    for (let d = 1; d <= 3; d++) {
+      if (apiSuspended) break;
+      const futDate = new Date();
+      futDate.setDate(futDate.getDate() + d);
+      const dateStr = futDate.toISOString().split("T")[0];
+      const { data: futData, ok: futOk } = await apiFetch(`/fixtures?date=${dateStr}`, FIXTURE_LIST_TTL);
+      console.log(`[matches-today] +${d}d (${dateStr}) — ok: ${futOk}, results: ${futData?.results ?? 0}`);
       if (futOk && futData && (futData.results ?? 0) > 0) {
-        const raw = futData.response ?? [];
+        const raw: any[] = futData.response ?? [];
+        saveFixturesToDB(raw).catch(() => {});
         const matches = raw
           .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
           .filter(Boolean);
-        console.log(`[matches-today] Found ${matches.length} upcoming fixtures on ${futureDateStr}`);
-        return res.json({
-          total: matches.length,
-          matches,
-          demo: false,
-          stale: futStale ?? false,
-          isUpcoming: true,
-          upcomingDate: futureDateStr,
-          apiStatus: "upcoming_fallback",
-        });
+        return res.json({ total: matches.length, matches, demo: false, stale: false, isUpcoming: true, upcomingDate: dateStr, apiStatus: "api_date_fallback" });
       }
     }
 
-    // All attempts returned empty
+    // ── Step 3: Serve stale DB data if API completely failed ──────────────
+    if (dbCount > 0) {
+      console.warn(`[matches-today] API unavailable — serving ${dbCount} stale DB fixtures (age: ${Math.round(ageMs / 1000)}s)`);
+      const now = new Date();
+      const isUpcoming = dbFixtures.every(f => new Date(f.date) > now);
+      return res.json({
+        total: dbCount,
+        matches: dbFixtures,
+        demo: false,
+        stale: true,
+        isUpcoming,
+        apiStatus: "db_stale",
+      });
+    }
+
+    // ── Step 4: Nothing available anywhere ───────────────────────────────
     const finalStatus = apiSuspended ? "daily_limit" : "unavailable";
-    console.warn(`[matches-today] No fixtures found anywhere — API status: ${finalStatus}`);
-    return res.json({
-      total: 0,
-      matches: [],
-      demo: false,
-      stale: false,
-      isUpcoming: false,
-      apiStatus: finalStatus,
-    });
+    console.warn(`[matches-today] No fixtures anywhere — status: ${finalStatus}`);
+    return res.json({ total: 0, matches: [], demo: false, stale: false, isUpcoming: false, apiStatus: finalStatus });
+
   } catch (err: any) {
     console.error("[matches-today] Unhandled error:", err.message);
-    return res.json({ total: 0, matches: [], demo: false, stale: false, isUpcoming: false });
+    return res.json({ total: 0, matches: [], demo: false, stale: false, isUpcoming: false, apiStatus: "error" });
   }
 });
 

@@ -321,6 +321,7 @@ export default function Home() {
   const allMatches  = liveData?.matches    ?? [];
   const isStale     = liveData?.stale      === true;
   const isUpcoming  = liveData?.isUpcoming === true;
+  const apiStatus   = liveData?.apiStatus  ?? "";
 
   // Build unique league list for the filter (preserve priority order)
   const leagues = useMemo(() => {
@@ -413,11 +414,18 @@ export default function Home() {
             )}
           </h2>
 
-          {/* Stale / updating indicator */}
-          {(isStale || (liveFetching && allMatches.length > 0)) && (
+          {/* Stale DB data banner */}
+          {isStale && !liveFetching && (
             <span className="flex items-center gap-1.5 text-xs text-amber-400/80 bg-amber-400/8 px-2.5 py-1 rounded-full border border-amber-400/15">
+              <Clock className="w-3 h-3" />
+              Live updates paused. Showing latest available data.
+            </span>
+          )}
+          {/* Fetching indicator (only shown when we already have matches) */}
+          {!isStale && liveFetching && allMatches.length > 0 && (
+            <span className="flex items-center gap-1.5 text-xs text-zinc-500 bg-white/[0.04] px-2.5 py-1 rounded-full border border-white/[0.07]">
               <Loader2 className="w-3 h-3 animate-spin" />
-              Updating match data...
+              Updating...
             </span>
           )}
 

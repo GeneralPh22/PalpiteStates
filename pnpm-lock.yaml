@@ -166,6 +166,9 @@ importers:
 
   artifacts/api-server:
     dependencies:
+      '@types/pg':
+        specifier: ^8.18.0
+        version: 8.18.0
       '@workspace/api-zod':
         specifier: workspace:*
         version: link:../../lib/api-zod
@@ -193,6 +196,9 @@ importers:
       jsonwebtoken:
         specifier: ^9.0.3
         version: 9.0.3
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       stripe:
         specifier: ^20.4.1
         version: 20.4.1(@types/node@25.3.5)

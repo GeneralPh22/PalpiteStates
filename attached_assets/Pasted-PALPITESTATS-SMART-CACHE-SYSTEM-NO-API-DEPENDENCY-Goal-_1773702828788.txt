@@ -1,0 +1,139 @@
+PALPITESTATS – SMART CACHE SYSTEM (NO API DEPENDENCY)
+
+Goal:
+Ensure the website continues working even when API limit is reached.
+
+--------------------------------------------------
+
+1. DATABASE STORAGE
+
+Store fixtures in database.
+
+Table: fixtures
+
+Fields:
+fixture_id
+home_team
+away_team
+league
+date
+status
+home_score
+away_score
+last_updated
+
+--------------------------------------------------
+
+2. DATA FLOW
+
+Step 1:
+When homepage loads:
+
+Check database first.
+
+IF data exists and is recent:
+→ Use database data
+
+IF no data or outdated:
+→ Call API
+
+--------------------------------------------------
+
+3. CACHE RULES
+
+Fixtures cache duration:
+10 minutes
+
+Player stats:
+6 hours
+
+Team stats:
+24 hours
+
+--------------------------------------------------
+
+4. BACKGROUND UPDATE
+
+Create background job:
+
+Every 10 minutes:
+
+- Fetch new fixtures:
+/fixtures?next=20
+
+- Update database
+
+Do NOT block frontend
+
+--------------------------------------------------
+
+5. API LIMIT PROTECTION
+
+If API returns error or limit reached:
+
+DO NOT break site
+
+Instead:
+
+Use last saved data from database
+
+Show message:
+
+"Live updates paused. Showing latest available data."
+
+--------------------------------------------------
+
+6. FALLBACK SYSTEM
+
+If database empty AND API fails:
+
+Show:
+
+"No data available. Please try again later."
+
+--------------------------------------------------
+
+7. REQUEST CONTROL
+
+Limit API calls:
+
+Max 1 request per 10 minutes (fixtures)
+
+Never spam API
+
+--------------------------------------------------
+
+8. MATCH DISPLAY PRIORITY
+
+Order:
+
+1. Live matches
+2. Today's matches
+3. Upcoming matches
+
+--------------------------------------------------
+
+9. PERFORMANCE BOOST
+
+Use:
+
+keepPreviousData = true
+
+Never clear matches while loading new data
+
+--------------------------------------------------
+
+10. ERROR HANDLING
+
+Log errors but never crash UI
+
+console.error("API ERROR:", error)
+
+--------------------------------------------------
+
+RESULT:
+
+Site never goes empty
+Matches always visible
+API usage reduced drastically
+Professional performance level
