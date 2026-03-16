@@ -54,15 +54,39 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
     const data = await res.json();
 
     if (data.errors && Object.keys(data.errors).length > 0) {
-      const errMsg = JSON.stringify(data.errors);
-      const isSuspended = errMsg.toLowerCase().includes("suspend") || errMsg.toLowerCase().includes("access");
-      const isRateLimit  = errMsg.toLowerCase().includes("ratelimit") || errMsg.toLowerCase().includes("too many");
-      if (isSuspended || isRateLimit) {
+      const errKey = Object.keys(data.errors)[0] ?? "";
+      const errVal = String(Object.values(data.errors)[0] ?? "");
+      const fullMsg = errVal.toLowerCase();
+
+      // Always log the real error so it's visible in server logs
+      console.error(`[api-football] API error for ${path} — key:"${errKey}" msg:"${errVal}"`);
+
+      // Daily request limit exhausted — suspend briefly to protect remaining quota
+      // Must be checked BEFORE isPlanError since its message can mention "plan"
+      const isDailyLimit = errKey === "requests" || fullMsg.includes("request limit") || fullMsg.includes("reached the request");
+
+      // Plan restriction: endpoint not available on current subscription
+      // e.g. "Free plans do not have access to the Next parameter."
+      // Do NOT suspend — this is a plan mismatch, not a quota issue
+      const isPlanError = !isDailyLimit && (errKey === "plan" || fullMsg.includes("not have access"));
+
+      // True account suspension
+      const isAccountSuspended = !isPlanError && fullMsg.includes("suspend");
+
+      // Over-rate or general rate limit
+      const isRateLimit = !isPlanError && (fullMsg.includes("ratelimit") || fullMsg.includes("too many"));
+
+      if (isAccountSuspended || isDailyLimit || isRateLimit) {
         apiSuspended = true;
         lastSuspendedCheck = Date.now();
-        if (isSuspended) console.warn(`[api-football] Account suspended.`);
-        else              console.warn(`[api-football] Rate limit hit.`);
+        console.warn(`[api-football] ${isAccountSuspended ? "Account suspended" : isDailyLimit ? "Daily request limit reached" : "Rate limit hit"} — pausing API calls`);
       }
+
+      if (isPlanError) {
+        console.warn(`[api-football] Plan restriction — ${path} not available on current plan. Returning empty.`);
+        return { data: null, ok: false };
+      }
+
       if (cached) return { data: cached.data, ok: true, stale: true };
       return { data: null, ok: false };
     }
@@ -115,8 +139,10 @@ async function apiFetchPlayer(path: string, ttl = FORM_TTL): Promise<{ data: any
     const data = await res.json();
 
     if (data.errors && Object.keys(data.errors).length > 0) {
-      // Log but NEVER set apiSuspended — only core match calls may do that
-      console.warn(`[player-stats] API error for ${path}: ${JSON.stringify(data.errors)}`);
+      const pErrKey = Object.keys(data.errors)[0] ?? "";
+      const pErrVal = String(Object.values(data.errors)[0] ?? "");
+      // Log full error details — NEVER set apiSuspended here
+      console.warn(`[player-stats] API error for ${path} — key:"${pErrKey}" msg:"${pErrVal}"`);
       if (cached) return { data: cached.data, ok: true };
       return { data: null, ok: false };
     }
@@ -249,37 +275,45 @@ router.get("/matches-today", async (_req, res) => {
       return res.json({ total: matches.length, matches, demo: false, stale: stale ?? false, isUpcoming: false });
     }
 
-    // ── Fallback: no matches today → fetch next 20 upcoming fixtures ───────────
-    console.log(`[matches-today] No fixtures today — falling back to /fixtures?next=20`);
-    const { data: nextData, ok: nextOk, stale: nextStale } = await apiFetch(`/fixtures?next=20`, FIXTURE_LIST_TTL);
+    // ── Fallback: no matches today → try the next 3 days (free-plan compatible) ─
+    // NOTE: /fixtures?next=N requires a paid plan — always use date-based queries
+    console.log(`[matches-today] No fixtures today — scanning next 3 days for upcoming fixtures`);
 
-    console.log(`[matches-today] Upcoming fallback — ok: ${nextOk}, results: ${nextData?.results ?? 0}`);
+    for (let daysAhead = 1; daysAhead <= 3; daysAhead++) {
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + daysAhead);
+      const futureDateStr = futureDate.toISOString().split("T")[0];
 
-    if (nextOk && nextData && (nextData.results ?? 0) > 0) {
-      const raw = nextData.response ?? [];
-      const matches = raw
-        .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
-        .filter(Boolean);
-      console.log(`[matches-today] Mapped ${matches.length} upcoming fixtures as fallback`);
-      return res.json({
-        total: matches.length,
-        matches,
-        demo: false,
-        stale: nextStale ?? false,
-        isUpcoming: true,
-        apiStatus: "upcoming_fallback",
-      });
+      const { data: futData, ok: futOk, stale: futStale } = await apiFetch(`/fixtures?date=${futureDateStr}`, FIXTURE_LIST_TTL);
+      console.log(`[matches-today] +${daysAhead}d (${futureDateStr}) — ok: ${futOk}, results: ${futData?.results ?? 0}`);
+
+      if (futOk && futData && (futData.results ?? 0) > 0) {
+        const raw = futData.response ?? [];
+        const matches = raw
+          .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
+          .filter(Boolean);
+        console.log(`[matches-today] Found ${matches.length} upcoming fixtures on ${futureDateStr}`);
+        return res.json({
+          total: matches.length,
+          matches,
+          demo: false,
+          stale: futStale ?? false,
+          isUpcoming: true,
+          upcomingDate: futureDateStr,
+          apiStatus: "upcoming_fallback",
+        });
+      }
     }
 
-    // Both calls failed or returned empty
-    console.warn(`[matches-today] Both today and upcoming fetches returned empty — API status: ${apiSuspended ? "suspended" : "unavailable"}`);
+    // All fallback dates returned empty
+    console.warn(`[matches-today] No fixtures found for today or next 3 days — API status: ${apiSuspended ? "daily_limit" : "unavailable"}`);
     return res.json({
       total: 0,
       matches: [],
       demo: false,
       stale: false,
       isUpcoming: false,
-      apiStatus: apiSuspended ? "suspended" : "unavailable",
+      apiStatus: apiSuspended ? "daily_limit" : "unavailable",
     });
   } catch (err: any) {
     console.error("[matches-today] Unhandled error:", err.message);
