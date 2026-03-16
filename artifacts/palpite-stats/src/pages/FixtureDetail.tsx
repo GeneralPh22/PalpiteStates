@@ -210,8 +210,31 @@ function TabOverview({ fixture, analysis }: { fixture: Fixture; analysis: any })
                     <div className="text-[9px] text-zinc-600 uppercase">L</div>
                   </div>
                 </div>
-                <div className="text-[10px] text-zinc-600">
-                  Goals: {stats.goalsFor} scored · {stats.goalsAgainst} conceded
+                <div className="border-t border-white/[0.05] pt-2.5 grid grid-cols-2 gap-y-1.5 text-[10px]">
+                  <div className="flex justify-between pr-2">
+                    <span className="text-zinc-600">Avg scored</span>
+                    <span className="text-zinc-300 font-semibold">{stats.avgGoalsFor ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between pl-2 border-l border-white/[0.05]">
+                    <span className="text-zinc-600">Avg conceded</span>
+                    <span className="text-zinc-300 font-semibold">{stats.avgGoalsAgainst ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between pr-2">
+                    <span className="text-zinc-600">Over 2.5</span>
+                    <span className="text-amber-400 font-semibold">{stats.over25Pct != null ? `${stats.over25Pct}%` : "—"}</span>
+                  </div>
+                  <div className="flex justify-between pl-2 border-l border-white/[0.05]">
+                    <span className="text-zinc-600">BTTS</span>
+                    <span className="text-emerald-400 font-semibold">{stats.bttsPct != null ? `${stats.bttsPct}%` : "—"}</span>
+                  </div>
+                  <div className="flex justify-between pr-2">
+                    <span className="text-zinc-600">Clean sheets</span>
+                    <span className="text-zinc-300 font-semibold">{stats.cleanSheets ?? "—"}</span>
+                  </div>
+                  <div className="flex justify-between pl-2 border-l border-white/[0.05]">
+                    <span className="text-zinc-600">Failed to score</span>
+                    <span className="text-zinc-300 font-semibold">{stats.failedToScore ?? "—"}</span>
+                  </div>
                 </div>
               </div>
             ) : null
@@ -484,103 +507,347 @@ function TabOdds({ oddsData, fixture, analysis }: { oddsData: any; fixture: Fixt
 }
 
 // ── TAB: AI Analysis ──────────────────────────────────────────────────────────
-function TabAI({ fixture, analysis, oddsData }: { fixture: Fixture; analysis: any; oddsData: any }) {
+function TabAI({ fixture, analysis, oddsData, h2hData }: {
+  fixture: Fixture; analysis: any; oddsData: any; h2hData: any;
+}) {
   if (!analysis) {
     return (
       <div className="flex items-center justify-center py-16 text-zinc-600 gap-2">
         <Loader2 className="w-5 h-5 animate-spin" />
+        <span className="text-sm">Loading AI analysis...</span>
       </div>
     );
   }
 
-  const { probabilities } = analysis;
+  const { probabilities, expectedGoals, homeStats, awayStats } = analysis;
   const odds = oddsData?.odds;
 
-  const suggestions = [
-    {
-      market: "Match Result (1X2)",
-      bet: probabilities.homeWin > probabilities.awayWin
-        ? `${fixture.homeTeam.name} Win`
-        : probabilities.awayWin > probabilities.homeWin
-        ? `${fixture.awayTeam.name} Win`
-        : "Draw",
-      prob: Math.max(probabilities.homeWin, probabilities.awayWin, probabilities.draw),
-    },
-    {
-      market: "Goals",
-      bet: probabilities.over25 > 0.5 ? "Over 2.5 Goals" : "Under 2.5 Goals",
-      prob: probabilities.over25 > 0.5 ? probabilities.over25 : 1 - probabilities.over25,
-    },
-    {
-      market: "Both Teams to Score",
-      bet: probabilities.btts > 0.5 ? "BTTS Yes" : "BTTS No",
-      prob: probabilities.btts > 0.5 ? probabilities.btts : 1 - probabilities.btts,
-    },
-    {
-      market: "Corners",
-      bet: "Over 8.5 Corners",
-      prob: probabilities.cornerOver9,
-    },
-  ].sort((a, b) => b.prob - a.prob);
-
-  const getConf = (p: number) => p >= 0.65 ? "High" : p >= 0.5 ? "Medium" : "Low";
+  const getConf = (p: number) => p >= 0.65 ? "High" : p >= 0.55 ? "Medium" : "Low";
   const getConfStyle = (p: number) =>
     p >= 0.65
       ? "bg-primary/10 text-primary border-primary/20"
-      : p >= 0.5
+      : p >= 0.55
       ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
       : "bg-zinc-700/30 text-zinc-500 border-zinc-700/30";
 
+  const allBets = [
+    { market: "Match Result", bet: `${fixture.homeTeam.name} Win`, prob: probabilities.homeWin, markets: "1X2" },
+    { market: "Match Result", bet: "Draw", prob: probabilities.draw, markets: "1X2" },
+    { market: "Match Result", bet: `${fixture.awayTeam.name} Win`, prob: probabilities.awayWin, markets: "1X2" },
+    { market: "Goals", bet: "Over 2.5 Goals", prob: probabilities.over25, markets: "O/U" },
+    { market: "Goals", bet: "Under 2.5 Goals", prob: 1 - probabilities.over25, markets: "O/U" },
+    { market: "Both Teams Score", bet: "BTTS Yes", prob: probabilities.btts, markets: "BTTS" },
+    { market: "Both Teams Score", bet: "BTTS No", prob: 1 - probabilities.btts, markets: "BTTS" },
+    { market: "Corners", bet: "Over 8.5 Corners", prob: probabilities.cornerOver9, markets: "Corners" },
+    { market: "Cards", bet: "Over 3.5 Cards", prob: probabilities.over35cards ?? 0.35, markets: "Cards" },
+  ];
+  const topBets = [...allBets].sort((a, b) => b.prob - a.prob).slice(0, 3);
+
+  // H2H summary
+  const h2hMatches = h2hData?.h2h ?? [];
+  const h2hHomeWins = h2hMatches.filter((m: any) => {
+    const homeIsHome = m.homeTeam.name === fixture.homeTeam.name;
+    return homeIsHome ? m.score.home > m.score.away : m.score.away > m.score.home;
+  }).length;
+  const h2hAwayWins = h2hMatches.filter((m: any) => {
+    const awayIsAway = m.awayTeam.name === fixture.awayTeam.name;
+    return awayIsAway ? m.score.away > m.score.home : m.score.home > m.score.away;
+  }).length;
+  const h2hDraws = h2hMatches.filter((m: any) => m.score.home === m.score.away).length;
+  const h2hAvgGoals = h2hMatches.length > 0
+    ? ((h2hMatches.reduce((sum: number, m: any) => sum + (m.score.home ?? 0) + (m.score.away ?? 0), 0)) / h2hMatches.length).toFixed(1)
+    : null;
+
+  // Key insights
+  const insights: string[] = [];
+  if (homeStats?.avgGoalsFor != null) {
+    insights.push(`${fixture.homeTeam.name} averages ${homeStats.avgGoalsFor} goals per game (${homeStats.avgGoalsAgainst} conceded).`);
+  }
+  if (awayStats?.avgGoalsFor != null) {
+    insights.push(`${fixture.awayTeam.name} averages ${awayStats.avgGoalsFor} goals per game (${awayStats.avgGoalsAgainst} conceded).`);
+  }
+  if (probabilities.over25 > 0.6) {
+    insights.push(`High-scoring match likely — Over 2.5 probability at ${Math.round(probabilities.over25 * 100)}%.`);
+  } else if (probabilities.over25 < 0.4) {
+    insights.push(`Low-scoring match expected — Under 2.5 probability at ${Math.round((1 - probabilities.over25) * 100)}%.`);
+  }
+  if (probabilities.btts > 0.6) {
+    insights.push(`Both teams expected to score — BTTS probability at ${Math.round(probabilities.btts * 100)}%.`);
+  }
+  if (homeStats?.cleanSheets > 3) {
+    insights.push(`${fixture.homeTeam.name} has kept ${homeStats.cleanSheets} clean sheets this season.`);
+  }
+  if (h2hMatches.length > 0) {
+    insights.push(`Last ${h2hMatches.length} H2H meetings: ${fixture.homeTeam.name} ${h2hHomeWins}W · ${h2hDraws}D · ${h2hAwayWins}W ${fixture.awayTeam.name}.`);
+    if (h2hAvgGoals) insights.push(`Average ${h2hAvgGoals} goals per H2H game.`);
+  }
+  if (expectedGoals) {
+    insights.push(`Poisson model predicts ${expectedGoals} combined expected goals.`);
+  }
+
+  // Final verdict
+  const topResult = allBets
+    .filter(b => b.markets === "1X2")
+    .sort((a, b) => b.prob - a.prob)[0];
+  const goalsCall = probabilities.over25 > 0.5 ? "Over 2.5" : "Under 2.5";
+  const topOverall = allBets.sort((a, b) => b.prob - a.prob)[0];
+
+  const probabilityRows = [
+    { label: `${fixture.homeTeam.name} Win`, prob: probabilities.homeWin, color: "bg-primary" },
+    { label: "Draw", prob: probabilities.draw, color: "bg-zinc-500" },
+    { label: `${fixture.awayTeam.name} Win`, prob: probabilities.awayWin, color: "bg-blue-500" },
+    { label: "Over 2.5 Goals", prob: probabilities.over25, color: "bg-amber-500" },
+    { label: "Under 2.5 Goals", prob: 1 - probabilities.over25, color: "bg-zinc-600" },
+    { label: "BTTS Yes", prob: probabilities.btts, color: "bg-emerald-500" },
+    { label: "BTTS No", prob: 1 - probabilities.btts, color: "bg-zinc-700" },
+    { label: "Over 8.5 Corners", prob: probabilities.cornerOver9, color: "bg-purple-500" },
+    { label: "Over 3.5 Cards", prob: probabilities.over35cards ?? 0.35, color: "bg-rose-500" },
+  ];
+
   return (
     <div className="space-y-4">
+      {/* Engine banner */}
       <div className="bg-gradient-to-br from-primary/5 to-transparent border border-primary/10 rounded-2xl p-4">
         <p className="text-xs text-zinc-400 leading-relaxed">
-          <strong className="text-primary">AI Probability Engine</strong> — Probabilities calculated using Poisson distribution modelling,
-          team form analysis, attack/defense ratings, and bookmaker odds comparison.
+          <strong className="text-primary">AI Probability Engine</strong> — Poisson distribution modelling with team attack/defense ratings,
+          seasonal form analysis, and bookmaker odds comparison.
         </p>
       </div>
 
-      {suggestions.map(({ market, bet, prob }) => (
-        <div key={market} className="bg-[#09090b] border border-white/[0.07] rounded-xl p-4">
-          <div className="flex items-start justify-between gap-3 mb-3">
-            <div>
-              <div className="text-[10px] text-zinc-600 uppercase tracking-wider font-semibold mb-1">{market}</div>
-              <div className="text-sm font-bold text-white">{bet}</div>
-            </div>
-            <span className={cn("text-[10px] font-bold px-2.5 py-1 rounded-full border flex-shrink-0", getConfStyle(prob))}>
-              {getConf(prob)} confidence
-            </span>
+      {/* ── SECTION 1: Match Information ─────────────────────────── */}
+      <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4">
+        <h3 className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider mb-3">Match Information</h3>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="flex justify-between">
+            <span className="text-zinc-600">League</span>
+            <span className="text-zinc-300 font-medium text-right truncate max-w-[120px]">{fixture.league.name}</span>
           </div>
-          <div className="space-y-1.5">
-            <div className="flex justify-between text-xs">
-              <span className="text-zinc-500">AI Probability</span>
-              <span className="font-bold text-white">{Math.round(prob * 100)}%</span>
-            </div>
-            <div className="h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${Math.round(prob * 100)}%` }}
-                transition={{ duration: 0.8, delay: 0.15 }}
-                className={cn("h-full rounded-full", prob >= 0.65 ? "bg-primary" : prob >= 0.5 ? "bg-amber-500" : "bg-zinc-500")}
-              />
-            </div>
-            {odds && (
-              <div className="flex justify-between text-[10px] text-zinc-600 pt-0.5">
-                <span>
-                  Fair odds:{" "}
-                  <span className="text-zinc-400 font-medium">{(1 / prob).toFixed(2)}</span>
-                </span>
-                {market === "Goals" && odds.over25 && (
-                  <span>
-                    Bookmaker: <span className="text-zinc-400 font-medium">{odds.over25.toFixed(2)}</span>
-                    {odds.over25 > 1 / prob && " 🔥"}
-                  </span>
-                )}
-              </div>
-            )}
+          <div className="flex justify-between">
+            <span className="text-zinc-600">Round</span>
+            <span className="text-zinc-300 font-medium text-right truncate max-w-[120px]">{fixture.league.round}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-zinc-600">Date</span>
+            <span className="text-zinc-300 font-medium">{format(new Date(fixture.date), "dd MMM yyyy")}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-zinc-600">Kick-off</span>
+            <span className="text-zinc-300 font-medium">{format(new Date(fixture.date), "HH:mm")}</span>
+          </div>
+          <div className="flex justify-between col-span-2">
+            <span className="text-zinc-600">Expected Goals (xG)</span>
+            <span className="text-primary font-bold">{expectedGoals}</span>
           </div>
         </div>
-      ))}
+      </div>
+
+      {/* ── SECTION 2: Team Form ─────────────────────────────────── */}
+      {(homeStats || awayStats) && (
+        <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4">
+          <h3 className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider mb-3">Team Form</h3>
+          <div className="space-y-4">
+            {[
+              { team: fixture.homeTeam, stats: homeStats },
+              { team: fixture.awayTeam, stats: awayStats },
+            ].filter(({ stats }) => stats).map(({ team, stats }) => (
+              <div key={team.id}>
+                <div className="flex items-center gap-2 mb-2">
+                  {team.logo && <img src={team.logo} alt="" loading="lazy" className="w-5 h-5 object-contain" />}
+                  <span className="text-xs font-bold text-zinc-300">{team.name}</span>
+                  <span className="ml-auto text-[10px] text-zinc-600">{stats.played} games</span>
+                </div>
+                <FormBadge form={(stats.form ?? "").slice(-5)} />
+                <div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs">
+                  <div className="bg-primary/5 rounded-lg py-1.5">
+                    <div className="font-black text-primary">{stats.wins}</div>
+                    <div className="text-[9px] text-zinc-600">WIN</div>
+                  </div>
+                  <div className="bg-zinc-800/50 rounded-lg py-1.5">
+                    <div className="font-black text-zinc-400">{stats.draws}</div>
+                    <div className="text-[9px] text-zinc-600">DRAW</div>
+                  </div>
+                  <div className="bg-red-500/5 rounded-lg py-1.5">
+                    <div className="font-black text-red-400">{stats.losses}</div>
+                    <div className="text-[9px] text-zinc-600">LOSS</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── SECTION 3: Statistical Performance ───────────────────── */}
+      {(homeStats || awayStats) && (
+        <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4">
+          <h3 className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider mb-3">Statistical Performance</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr>
+                  <th className="text-left py-1.5 text-zinc-600 font-medium w-24">Metric</th>
+                  <th className="text-center py-1.5 text-primary font-semibold truncate max-w-[80px]">{fixture.homeTeam.name}</th>
+                  <th className="text-center py-1.5 text-blue-400 font-semibold truncate max-w-[80px]">{fixture.awayTeam.name}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.04]">
+                {[
+                  { label: "Avg Goals Scored", h: homeStats?.avgGoalsFor, a: awayStats?.avgGoalsFor, fmt: (v: any) => v ?? "—" },
+                  { label: "Avg Goals Conceded", h: homeStats?.avgGoalsAgainst, a: awayStats?.avgGoalsAgainst, fmt: (v: any) => v ?? "—" },
+                  { label: "Over 2.5 %", h: homeStats?.over25Pct, a: awayStats?.over25Pct, fmt: (v: any) => v != null ? `${v}%` : "—" },
+                  { label: "BTTS %", h: homeStats?.bttsPct, a: awayStats?.bttsPct, fmt: (v: any) => v != null ? `${v}%` : "—" },
+                  { label: "Clean Sheets", h: homeStats?.cleanSheets, a: awayStats?.cleanSheets, fmt: (v: any) => v ?? "—" },
+                  { label: "Failed to Score", h: homeStats?.failedToScore, a: awayStats?.failedToScore, fmt: (v: any) => v ?? "—" },
+                ].map(({ label, h, a, fmt }) => (
+                  <tr key={label}>
+                    <td className="py-2 text-zinc-600">{label}</td>
+                    <td className="py-2 text-center font-semibold text-zinc-200">{fmt(h)}</td>
+                    <td className="py-2 text-center font-semibold text-zinc-200">{fmt(a)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── SECTION 4: Head to Head ───────────────────────────────── */}
+      {h2hMatches.length > 0 && (
+        <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4">
+          <h3 className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider mb-3">
+            Head to Head Analysis ({h2hMatches.length} matches)
+          </h3>
+          <div className="flex items-center justify-between text-center mb-3">
+            <div>
+              <div className="text-2xl font-display font-black text-primary">{h2hHomeWins}</div>
+              <div className="text-[9px] text-zinc-600 uppercase font-semibold truncate max-w-[70px]">{fixture.homeTeam.name}</div>
+            </div>
+            <div>
+              <div className="text-2xl font-display font-black text-zinc-400">{h2hDraws}</div>
+              <div className="text-[9px] text-zinc-600 uppercase font-semibold">Draw</div>
+            </div>
+            <div>
+              <div className="text-2xl font-display font-black text-blue-400">{h2hAwayWins}</div>
+              <div className="text-[9px] text-zinc-600 uppercase font-semibold truncate max-w-[70px]">{fixture.awayTeam.name}</div>
+            </div>
+          </div>
+          <div className="h-1.5 flex rounded-full overflow-hidden bg-white/[0.05]">
+            <div className="bg-primary" style={{ width: `${h2hMatches.length ? (h2hHomeWins / h2hMatches.length) * 100 : 0}%` }} />
+            <div className="bg-zinc-600" style={{ width: `${h2hMatches.length ? (h2hDraws / h2hMatches.length) * 100 : 0}%` }} />
+            <div className="bg-blue-500" style={{ width: `${h2hMatches.length ? (h2hAwayWins / h2hMatches.length) * 100 : 0}%` }} />
+          </div>
+          {h2hAvgGoals && (
+            <p className="text-[10px] text-zinc-600 text-center mt-2">Average {h2hAvgGoals} goals per meeting</p>
+          )}
+        </div>
+      )}
+
+      {/* ── SECTION 5: Probability Model ─────────────────────────── */}
+      <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4">
+        <h3 className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider mb-3">Probability Model</h3>
+        <div className="space-y-2.5">
+          {probabilityRows.map(({ label, prob, color }) => (
+            <div key={label} className="space-y-1">
+              <div className="flex justify-between text-xs">
+                <span className="text-zinc-400">{label}</span>
+                <div className="flex items-center gap-2.5">
+                  <span className="text-zinc-600 text-[10px]">Fair: {(1 / prob).toFixed(2)}</span>
+                  <span className="font-bold text-white w-10 text-right">{Math.round(prob * 100)}%</span>
+                </div>
+              </div>
+              <div className="h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.round(prob * 100)}%` }}
+                  transition={{ duration: 0.7, delay: 0.05 }}
+                  className={cn("h-full rounded-full", color)}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+        <p className="text-[9.5px] text-zinc-700 mt-3 text-center">
+          Fair odds = 1 ÷ probability. Calculated by Poisson distribution model.
+        </p>
+      </div>
+
+      {/* ── SECTION 6: Best Bets ─────────────────────────────────── */}
+      <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4">
+        <h3 className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider mb-3">Best Bets</h3>
+        <div className="space-y-3">
+          {topBets.map(({ market, bet, prob, markets }, i) => (
+            <div key={`${market}-${bet}`} className={cn(
+              "rounded-xl p-3.5 border",
+              i === 0 ? "bg-primary/5 border-primary/15" : "bg-white/[0.02] border-white/[0.06]"
+            )}>
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <div className="text-[9.5px] text-zinc-600 uppercase tracking-wider font-semibold">{market} · {markets}</div>
+                  <div className={cn("text-sm font-bold mt-0.5", i === 0 ? "text-white" : "text-zinc-300")}>{bet}</div>
+                </div>
+                <div className="text-right flex-shrink-0 ml-3">
+                  <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full border", getConfStyle(prob))}>
+                    {getConf(prob)}
+                  </span>
+                  <div className="text-[10px] text-zinc-600 mt-1">Fair: {(1 / prob).toFixed(2)}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.round(prob * 100)}%` }}
+                    transition={{ duration: 0.8, delay: i * 0.12 }}
+                    className={cn("h-full rounded-full", prob >= 0.65 ? "bg-primary" : prob >= 0.55 ? "bg-amber-500" : "bg-zinc-500")}
+                  />
+                </div>
+                <span className="text-xs font-black text-white w-9 text-right tabular-nums">{Math.round(prob * 100)}%</span>
+              </div>
+              {odds && market === "Goals" && odds.over25 && (
+                <div className="mt-1.5 text-[10px] text-zinc-600 flex items-center gap-1">
+                  Bookmaker over 2.5: <span className="text-zinc-400 font-medium">{odds.over25.toFixed(2)}</span>
+                  {odds.over25 > (1 / prob) && <span className="text-orange-400 font-bold">🔥 VALUE</span>}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── SECTION 7: Key Insights ──────────────────────────────── */}
+      {insights.length > 0 && (
+        <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4">
+          <h3 className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider mb-3">Key Insights</h3>
+          <ul className="space-y-2">
+            {insights.map((insight, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs text-zinc-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-primary/60 flex-shrink-0 mt-1.5" />
+                {insight}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* ── SECTION 8: Final Verdict ─────────────────────────────── */}
+      <div className="bg-gradient-to-br from-primary/8 via-transparent to-transparent border border-primary/15 rounded-2xl p-4">
+        <h3 className="text-[11px] font-bold text-primary/80 uppercase tracking-wider mb-2">Final Verdict</h3>
+        <p className="text-sm text-zinc-300 leading-relaxed">
+          Based on the Poisson model, the strongest outcome is{" "}
+          <strong className="text-white">{topResult.bet}</strong> ({Math.round(topResult.prob * 100)}%
+          probability, fair odds {(1 / topResult.prob).toFixed(2)}). For goals,{" "}
+          <strong className="text-white">{goalsCall} Goals</strong> is the statistical lean
+          (xG: {expectedGoals}). The highest-confidence single bet is{" "}
+          <strong className="text-primary">{topOverall.bet}</strong> at{" "}
+          {Math.round(topOverall.prob * 100)}% — classified as{" "}
+          <strong className={topOverall.prob >= 0.65 ? "text-primary" : topOverall.prob >= 0.55 ? "text-amber-400" : "text-zinc-400"}>
+            {getConf(topOverall.prob)} confidence
+          </strong>.
+        </p>
+        <p className="text-[10px] text-zinc-700 mt-3">
+          ⚠️ Predictions are statistical estimates only. No outcome is guaranteed. Bet responsibly.
+        </p>
+      </div>
     </div>
   );
 }
@@ -644,7 +911,7 @@ export default function FixtureDetail() {
       if (!res.ok) throw new Error("H2H not available");
       return res.json();
     },
-    enabled: activeTab === "h2h" && !!fixture,
+    enabled: (activeTab === "h2h" || activeTab === "ai") && !!fixture,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -826,7 +1093,7 @@ export default function FixtureDetail() {
           {activeTab === "h2h" && <TabH2H h2h={h2hData} fixture={fixture} />}
           {activeTab === "players" && <TabPlayers />}
           {activeTab === "odds" && <TabOdds oddsData={oddsData} fixture={fixture} analysis={analysis} />}
-          {activeTab === "ai" && <TabAI fixture={fixture} analysis={analysis} oddsData={oddsData} />}
+          {activeTab === "ai" && <TabAI fixture={fixture} analysis={analysis} oddsData={oddsData} h2hData={h2hData} />}
         </motion.div>
       </AnimatePresence>
     </div>

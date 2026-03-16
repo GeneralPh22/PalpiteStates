@@ -300,15 +300,39 @@ router.get("/fixture/:id/analysis", async (req, res) => {
       avgGoals(as_, "against")
     );
 
-    const mapStats = (s: any) => s ? {
-      played: s.fixtures?.played?.total,
-      wins: s.fixtures?.wins?.total,
-      draws: s.fixtures?.draws?.total,
-      losses: s.fixtures?.loses?.total,
-      goalsFor: s.goals?.for?.total?.total,
-      goalsAgainst: s.goals?.against?.total?.total,
-      form: s.form,
-    } : null;
+    const mapStats = (s: any) => {
+      if (!s) return null;
+      const played = s.fixtures?.played?.total ?? 0;
+      const goalsFor = s.goals?.for?.total?.total ?? 0;
+      const goalsAgainst = s.goals?.against?.total?.total ?? 0;
+      const cleanSheets = s.clean_sheet?.total ?? 0;
+      const failedToScore = s.failed_to_score?.total ?? 0;
+      // Only compute per-game averages when we have real data
+      const hasData = played > 0;
+      const avgFor = hasData ? parseFloat((goalsFor / played).toFixed(2)) : null;
+      const avgAgainst = hasData ? parseFloat((goalsAgainst / played).toFixed(2)) : null;
+      const over25Pct = hasData && avgFor !== null && avgAgainst !== null
+        ? Math.round(Math.min(95, Math.max(5, over25Prob(avgFor + avgAgainst) * 100)))
+        : null;
+      const bttsPct = hasData && avgFor !== null && avgAgainst !== null
+        ? Math.round(Math.min(90, Math.max(5, bttsProbability(avgFor, avgAgainst) * 100)))
+        : null;
+      return {
+        played,
+        wins: s.fixtures?.wins?.total ?? 0,
+        draws: s.fixtures?.draws?.total ?? 0,
+        losses: s.fixtures?.loses?.total ?? 0,
+        goalsFor,
+        goalsAgainst,
+        avgGoalsFor: avgFor,
+        avgGoalsAgainst: avgAgainst,
+        cleanSheets,
+        failedToScore,
+        over25Pct,
+        bttsPct,
+        form: s.form ?? null,
+      };
+    };
 
     return res.json({
       ...result,

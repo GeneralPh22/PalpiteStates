@@ -338,13 +338,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </nav>
           </div>
 
-          <div className="mt-6 pt-5 border-t border-white/[0.05] text-center text-xs text-zinc-700">
-            <p>
-              &copy; {new Date().getFullYear()} PalpiteStats. All rights
-              reserved.
-            </p>
-            <p className="mt-1">
-              Information for analytical purposes only. Bet responsibly.
+          <div className="mt-6 pt-5 border-t border-white/[0.05] space-y-3">
+            <div className="bg-amber-500/5 border border-amber-500/15 rounded-xl px-5 py-3.5 text-center">
+              <p className="text-xs text-amber-400/80 font-medium leading-relaxed">
+                ⚠️ <strong className="text-amber-400">Jogue com responsabilidade.</strong>{" "}
+                Todas as previsões são baseadas em modelos estatísticos e probabilidades. Nenhum resultado é garantido.
+                Se o jogo estiver prejudicando sua vida, ligue para{" "}
+                <strong className="text-amber-300">CVV 188</strong> (gratuito, 24h).
+              </p>
+              <p className="text-[10px] text-amber-500/50 mt-1.5 font-medium">
+                Bet responsibly · All predictions are based on statistical models and probabilities · No outcome is guaranteed.
+              </p>
+            </div>
+            <p className="text-center text-xs text-zinc-700">
+              &copy; {new Date().getFullYear()} PalpiteStats. All rights reserved. · Information for analytical purposes only.
             </p>
           </div>
         </div>
