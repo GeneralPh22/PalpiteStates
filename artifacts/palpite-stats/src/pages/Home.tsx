@@ -92,6 +92,7 @@ function MatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
   const isLive = isLiveStatus(match.status.short);
   const isFinished = isFinishedStatus(match.status.short);
   const hasScore = match.score.home !== null && match.score.away !== null;
+  const hasValidId = match.id != null && !isNaN(Number(match.id));
 
   return (
     <motion.div
@@ -99,7 +100,11 @@ function MatchCard({ match, idx }: { match: LiveMatch; idx: number }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, delay: Math.min(idx * 0.03, 0.5) }}
     >
-      <Link href={`/fixture/${match.id}`} className="block group">
+      <Link
+        href={hasValidId ? `/fixture/${match.id}` : "#"}
+        onClick={!hasValidId ? (e) => e.preventDefault() : undefined}
+        className={cn("block group", !hasValidId && "pointer-events-none opacity-60")}
+      >
         <div
           className={cn(
             "relative flex flex-col rounded-xl overflow-hidden border transition-all duration-300 cursor-pointer",

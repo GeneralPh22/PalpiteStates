@@ -190,19 +190,20 @@ router.get("/fixture/:id", async (req, res) => {
   try {
     const fixtureId = Number(req.params.id);
     if (isNaN(fixtureId)) {
-      return res.status(400).json({ error: "Invalid fixture ID" });
+      return res.json({ found: false, reason: "invalid_id" });
     }
 
-    const { data, ok } = await apiFetch(`/fixtures?id=${fixtureId}`, MATCH_TTL);
+    const { data, ok, stale } = await apiFetch(`/fixtures?id=${fixtureId}`, MATCH_TTL);
 
     if (ok && data?.response?.[0]) {
-      return res.json({ ...mapFixture(data.response[0]), demo: false });
+      return res.json({ found: true, stale: !!stale, demo: false, ...mapFixture(data.response[0]) });
     }
 
-    return res.status(404).json({ error: "Fixture not found or API unavailable" });
+    // API unavailable or no data — return a safe 200 so the frontend never throws
+    return res.json({ found: false, reason: "unavailable" });
   } catch (err: any) {
     console.error("[fixture/:id]", err.message);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.json({ found: false, reason: "error" });
   }
 });
 

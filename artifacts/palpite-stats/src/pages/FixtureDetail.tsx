@@ -1096,24 +1096,48 @@ export default function FixtureDetail() {
   const { id } = useParams<{ id: string }>();
   const [activeTab, setActiveTab] = useState("overview");
 
-  const { data: fixture, isLoading: fixtureLoading, error: fixtureError } = useQuery<Fixture>({
+  const {
+    data: fixtureRaw,
+    isLoading: fixtureLoading,
+    isFetching: fixtureFetching,
+    failureCount,
+  } = useQuery({
     queryKey: ["fixture", id],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/fixture/${id}`);
-      if (!res.ok) throw new Error("Fixture not found");
-      return res.json();
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}`);
+        if (!res.ok) return { found: false, reason: "http_error" };
+        return res.json();
+      } catch {
+        return { found: false, reason: "network_error" };
+      }
     },
     enabled: !!id,
-    staleTime: 30 * 1000,
-    refetchInterval: 30 * 1000,
+    staleTime: 10 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+    refetchInterval: (q) => {
+      const d = q.state.data as any;
+      if (!d || d.found === false) return 10 * 1000; // retry every 10s when unavailable
+      return 30 * 1000; // normal refresh
+    },
+    retry: 2,
+    retryDelay: 3000,
   });
+
+  // Separate the "found" flag from the fixture data
+  const fixture = fixtureRaw?.found !== false ? (fixtureRaw as unknown as Fixture) : undefined;
+  const fixtureUnavailable = fixtureRaw?.found === false;
 
   const { data: analysis } = useQuery({
     queryKey: ["fixture-analysis", id],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/fixture/${id}/analysis`);
-      if (!res.ok) throw new Error("Analysis not available");
-      return res.json();
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}/analysis`);
+        if (!res.ok) return null;
+        return res.json();
+      } catch {
+        return null;
+      }
     },
     enabled: !!fixture,
     staleTime: 10 * 60 * 1000,
@@ -1122,9 +1146,13 @@ export default function FixtureDetail() {
   const { data: statsData } = useQuery({
     queryKey: ["fixture-stats", id],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/fixture/${id}/stats`);
-      if (!res.ok) throw new Error("Stats not available");
-      return res.json();
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}/stats`);
+        if (!res.ok) return { stats: [], available: false };
+        return res.json();
+      } catch {
+        return { stats: [], available: false };
+      }
     },
     enabled: activeTab === "stats" && !!fixture,
     staleTime: 5 * 60 * 1000,
@@ -1164,9 +1192,13 @@ export default function FixtureDetail() {
   const { data: playersData } = useQuery<PlayersData>({
     queryKey: ["fixture-players", id],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/fixture/${id}/players`);
-      if (!res.ok) return { available: false, teams: [] };
-      return res.json();
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}/players`);
+        if (!res.ok) return { available: false, teams: [] };
+        return res.json();
+      } catch {
+        return { available: false, teams: [] };
+      }
     },
     enabled: activeTab === "players" && !!fixture,
     staleTime: 5 * 60 * 1000,
@@ -1175,24 +1207,48 @@ export default function FixtureDetail() {
 
   if (fixtureLoading) {
     return (
-      <div className="container mx-auto px-4 py-16 max-w-3xl animate-pulse">
-        <div className="h-8 bg-card rounded-lg w-32 mb-8" />
-        <div className="h-48 bg-card rounded-2xl mb-6" />
-        <div className="h-12 bg-card rounded-xl mb-6" />
-        <div className="h-80 bg-card rounded-2xl" />
+      <div className="container mx-auto px-4 py-16 max-w-3xl">
+        <div className="flex flex-col items-center justify-center gap-4 py-16">
+          <Loader2 className="w-10 h-10 text-primary animate-spin" />
+          <p className="text-zinc-400 text-sm font-medium">Loading match statistics...</p>
+        </div>
+        <div className="space-y-4 animate-pulse mt-8">
+          <div className="h-48 bg-white/[0.04] rounded-2xl" />
+          <div className="h-12 bg-white/[0.03] rounded-xl" />
+          <div className="h-64 bg-white/[0.04] rounded-2xl" />
+        </div>
       </div>
     );
   }
 
-  if (fixtureError || !fixture) {
+  if (fixtureUnavailable || !fixture) {
+    const isRetrying = fixtureFetching && failureCount > 0;
     return (
       <div className="container mx-auto px-4 py-24 text-center max-w-3xl">
         <Globe className="w-16 h-16 text-zinc-700 mx-auto mb-4" />
-        <h2 className="text-2xl font-bold text-white mb-2">Fixture Not Found</h2>
-        <p className="text-zinc-500 mb-6">This fixture doesn't exist or is no longer available.</p>
-        <Link href="/" className="text-primary hover:underline inline-flex items-center gap-1">
-          <ArrowLeft className="w-4 h-4" /> Back to Home
-        </Link>
+        <h2 className="text-2xl font-bold text-white mb-2">
+          {isRetrying ? "Fetching match data..." : "Match data temporarily unavailable"}
+        </h2>
+        <p className="text-zinc-500 mb-2">
+          {isRetrying
+            ? "Connecting to data source, please wait..."
+            : "Match data is temporarily unavailable. Please refresh."}
+        </p>
+        {isRetrying ? (
+          <Loader2 className="w-6 h-6 text-primary animate-spin mx-auto mt-4" />
+        ) : (
+          <div className="flex items-center justify-center gap-4 mt-6">
+            <button
+              onClick={() => window.location.reload()}
+              className="text-sm font-semibold text-primary border border-primary/30 px-5 py-2 rounded-full hover:bg-primary/10 transition-colors"
+            >
+              Refresh page
+            </button>
+            <Link href="/" className="text-zinc-500 hover:text-white transition-colors inline-flex items-center gap-1 text-sm">
+              <ArrowLeft className="w-4 h-4" /> Back to matches
+            </Link>
+          </div>
+        )}
       </div>
     );
   }
@@ -1325,21 +1381,26 @@ export default function FixtureDetail() {
         ))}
       </div>
 
-      {/* Tab Content */}
+      {/* Tab Content — single child per motion.div prevents React 19 insertBefore crash */}
       <AnimatePresence mode="wait">
         <motion.div
           key={activeTab}
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -8 }}
-          transition={{ duration: 0.2 }}
+          transition={{ duration: 0.18 }}
         >
-          {activeTab === "overview" && <TabOverview fixture={fixture} analysis={analysis} />}
-          {activeTab === "stats" && <TabTeamStats fixture={fixture} stats={statsData} />}
-          {activeTab === "h2h" && <TabH2H h2h={h2hData} fixture={fixture} />}
-          {activeTab === "players" && <TabPlayers data={playersData} fixture={fixture} />}
-          {activeTab === "odds" && <TabOdds oddsData={oddsData} fixture={fixture} analysis={analysis} />}
-          {activeTab === "ai" && <TabAI fixture={fixture} analysis={analysis} oddsData={oddsData} h2hData={h2hData} />}
+          {(() => {
+            switch (activeTab) {
+              case "overview": return <TabOverview fixture={fixture} analysis={analysis} />;
+              case "stats":    return <TabTeamStats fixture={fixture} stats={statsData} />;
+              case "h2h":      return <TabH2H h2h={h2hData} fixture={fixture} />;
+              case "players":  return <TabPlayers data={playersData} fixture={fixture} />;
+              case "odds":     return <TabOdds oddsData={oddsData} fixture={fixture} analysis={analysis} />;
+              case "ai":       return <TabAI fixture={fixture} analysis={analysis} oddsData={oddsData} h2hData={h2hData} />;
+              default:         return <TabOverview fixture={fixture} analysis={analysis} />;
+            }
+          })()}
         </motion.div>
       </AnimatePresence>
     </div>
