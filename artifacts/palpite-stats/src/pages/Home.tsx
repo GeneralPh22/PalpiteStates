@@ -40,6 +40,7 @@ interface TodayMatchesResponse {
   matches: LiveMatch[];
   demo: boolean;
   stale?: boolean;
+  isUpcoming?: boolean;
   apiStatus?: string;
 }
 
@@ -56,12 +57,20 @@ function useTodayMatches() {
     queryFn: async () => {
       const res = await fetch(`${BASE}/api/matches-today`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
+      const data = await res.json();
+      console.log("[Home] Fixtures response:", {
+        total: data.total,
+        isUpcoming: data.isUpcoming,
+        apiStatus: data.apiStatus,
+        stale: data.stale,
+        firstMatch: data.matches?.[0]?.homeTeam?.name,
+      });
+      return data;
     },
-    staleTime: 30 * 1000,
-    gcTime: 10 * 60 * 1000,
+    staleTime: 5 * 60 * 1000,          // 5 minutes – matches backend FIXTURE_LIST_TTL
+    gcTime: 15 * 60 * 1000,
     refetchInterval: (query) =>
-      query.state.status === "error" ? 10 * 1000 : 30 * 1000,
+      query.state.status === "error" ? 15 * 1000 : 5 * 60 * 1000,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
     retry: 3,
@@ -305,8 +314,9 @@ export default function Home() {
     refetch: refetchLive,
   } = useTodayMatches();
 
-  const allMatches = liveData?.matches ?? [];
-  const isStale = liveData?.stale === true;
+  const allMatches  = liveData?.matches    ?? [];
+  const isStale     = liveData?.stale      === true;
+  const isUpcoming  = liveData?.isUpcoming === true;
 
   // Build unique league list for the filter (preserve priority order)
   const leagues = useMemo(() => {
@@ -391,7 +401,7 @@ export default function Home() {
         <div className="flex flex-wrap items-center gap-3 mb-5">
           <h2 className="text-2xl font-display font-bold flex items-center gap-2 mr-auto">
             <Globe className="w-6 h-6 text-primary" />
-            Today's Matches
+            {isUpcoming ? "Upcoming Matches" : "Today's Matches"}
             {liveData && (
               <span className="text-sm font-normal text-muted-foreground">
                 ({totalFiltered}{selectedLeague !== ALL_LEAGUES ? ` of ${liveData.total}` : ""})
@@ -476,10 +486,18 @@ export default function Home() {
           <div className="p-12 text-center bg-[#09090b] rounded-xl border border-white/[0.06] flex flex-col items-center">
             <Target className="w-12 h-12 text-muted-foreground mb-4" />
             <h3 className="text-xl font-medium text-white mb-2">
-              {allMatches.length === 0 ? "No matches scheduled today" : "No matches for this league"}
+              {allMatches.length === 0
+                ? isUpcoming
+                  ? "No matches found for today. Showing upcoming matches."
+                  : "No matches scheduled today"
+                : "No matches for this league"}
             </h3>
             <p className="text-muted-foreground text-sm">
-              {allMatches.length === 0 ? "Check back later or browse other dates." : "Select a different league or view all."}
+              {allMatches.length === 0
+                ? isUpcoming
+                  ? "These are the next scheduled fixtures across all competitions."
+                  : "Check back later or browse other dates."
+                : "Select a different league or view all."}
             </p>
           </div>
         ) : (

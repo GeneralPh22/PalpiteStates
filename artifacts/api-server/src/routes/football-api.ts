@@ -8,8 +8,9 @@ const cache = new Map<string, { data: unknown; ts: number }>();
 const ODDS_TTL = 5 * 60 * 1000;       // 5 minutes
 const STATS_TTL = 10 * 60 * 1000;     // 10 minutes
 const MATCH_TTL = 2 * 60 * 1000;      // 2 minutes
-const SQUAD_TTL = 24 * 60 * 60 * 1000; // 24 hours – squad roster
-const FORM_TTL  =  6 * 60 * 60 * 1000; //  6 hours – player performance stats
+const FIXTURE_LIST_TTL = 5 * 60 * 1000;  //  5 minutes – homepage fixture lists
+const SQUAD_TTL = 24 * 60 * 60 * 1000;   // 24 hours  – squad roster
+const FORM_TTL  =  6 * 60 * 60 * 1000;   //  6 hours   – player performance stats
 
 let apiSuspended = false;
 const SUSPENDED_CACHE_TTL = 5 * 60 * 1000;
@@ -185,36 +186,45 @@ function calcMatchProbabilities(homeAttack: number, homeDefend: number, awayAtta
 }
 
 function mapFixture(item: any) {
+  // Safe accessors — missing fields default to sensible values so no match is dropped
+  const fixture  = item?.fixture   ?? {};
+  const league   = item?.league    ?? {};
+  const teams    = item?.teams     ?? {};
+  const goals    = item?.goals     ?? {};
+  const home     = teams.home      ?? {};
+  const away     = teams.away      ?? {};
+  const status   = fixture.status  ?? {};
+
   return {
-    id: item.fixture.id,
-    date: item.fixture.date,
+    id:     fixture.id   ?? null,
+    date:   fixture.date ?? null,
     status: {
-      short: item.fixture.status.short,
-      long: item.fixture.status.long,
-      elapsed: item.fixture.status.elapsed,
+      short:   status.short   ?? "NS",
+      long:    status.long    ?? "Not Started",
+      elapsed: status.elapsed ?? null,
     },
     league: {
-      id: item.league.id,
-      name: item.league.name,
-      country: item.league.country,
-      logo: item.league.logo,
-      round: item.league.round,
+      id:      league.id      ?? 0,
+      name:    league.name    ?? "Unknown League",
+      country: league.country ?? "",
+      logo:    league.logo    ?? "",
+      round:   league.round   ?? "",
     },
     homeTeam: {
-      id: item.teams.home.id,
-      name: item.teams.home.name,
-      logo: item.teams.home.logo,
-      winner: item.teams.home.winner,
+      id:     home.id     ?? 0,
+      name:   home.name   ?? "Home",
+      logo:   home.logo   ?? "",
+      winner: home.winner ?? null,
     },
     awayTeam: {
-      id: item.teams.away.id,
-      name: item.teams.away.name,
-      logo: item.teams.away.logo,
-      winner: item.teams.away.winner,
+      id:     away.id     ?? 0,
+      name:   away.name   ?? "Away",
+      logo:   away.logo   ?? "",
+      winner: away.winner ?? null,
     },
     score: {
-      home: item.goals.home,
-      away: item.goals.away,
+      home: goals.home ?? null,
+      away: goals.away ?? null,
     },
   };
 }
@@ -222,24 +232,58 @@ function mapFixture(item: any) {
 // ── matches-today ──────────────────────────────────────────────────────────────
 router.get("/matches-today", async (_req, res) => {
   try {
+    // Date in YYYY-MM-DD format as required by API-Football
     const today = new Date().toISOString().split("T")[0];
-    const { data, ok, stale } = await apiFetch(`/fixtures?date=${today}`, MATCH_TTL);
+
+    console.log(`[matches-today] Fetching fixtures for date: ${today}`);
+    const { data, ok, stale } = await apiFetch(`/fixtures?date=${today}`, FIXTURE_LIST_TTL);
+
+    console.log(`[matches-today] Response — ok: ${ok}, results: ${data?.results ?? 0}, stale: ${stale ?? false}`);
 
     if (ok && data && (data.results ?? 0) > 0) {
-      const matches = (data.response ?? []).map(mapFixture);
-      return res.json({ total: matches.length, matches, demo: false, stale: stale ?? false });
+      const raw = data.response ?? [];
+      const matches = raw
+        .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
+        .filter(Boolean);
+      console.log(`[matches-today] Mapped ${matches.length} fixtures for today`);
+      return res.json({ total: matches.length, matches, demo: false, stale: stale ?? false, isUpcoming: false });
     }
 
+    // ── Fallback: no matches today → fetch next 20 upcoming fixtures ───────────
+    console.log(`[matches-today] No fixtures today — falling back to /fixtures?next=20`);
+    const { data: nextData, ok: nextOk, stale: nextStale } = await apiFetch(`/fixtures?next=20`, FIXTURE_LIST_TTL);
+
+    console.log(`[matches-today] Upcoming fallback — ok: ${nextOk}, results: ${nextData?.results ?? 0}`);
+
+    if (nextOk && nextData && (nextData.results ?? 0) > 0) {
+      const raw = nextData.response ?? [];
+      const matches = raw
+        .map((item: any) => { try { return mapFixture(item); } catch { return null; } })
+        .filter(Boolean);
+      console.log(`[matches-today] Mapped ${matches.length} upcoming fixtures as fallback`);
+      return res.json({
+        total: matches.length,
+        matches,
+        demo: false,
+        stale: nextStale ?? false,
+        isUpcoming: true,
+        apiStatus: "upcoming_fallback",
+      });
+    }
+
+    // Both calls failed or returned empty
+    console.warn(`[matches-today] Both today and upcoming fetches returned empty — API status: ${apiSuspended ? "suspended" : "unavailable"}`);
     return res.json({
       total: 0,
       matches: [],
       demo: false,
       stale: false,
+      isUpcoming: false,
       apiStatus: apiSuspended ? "suspended" : "unavailable",
     });
   } catch (err: any) {
-    console.error("[matches-today]", err.message);
-    return res.json({ total: 0, matches: [], demo: false, stale: false });
+    console.error("[matches-today] Unhandled error:", err.message);
+    return res.json({ total: 0, matches: [], demo: false, stale: false, isUpcoming: false });
   }
 });
 
