@@ -620,10 +620,81 @@ router.get("/fixture/:id/analysis", async (req, res) => {
       };
     };
 
+    const homeStats = mapStats(hs);
+    const awayStats = mapStats(as_);
+
+    // ── Best Bet selection ─────────────────────────────────────────────────
+    const p = result.probabilities;
+    const homeName = item.teams.home.name ?? "Home";
+    const awayName = item.teams.away.name ?? "Away";
+
+    const betCandidates = [
+      { market: `${homeName} Win`,      prob: p.homeWin,  threshold: 0.52 },
+      { market: `${awayName} Win`,      prob: p.awayWin,  threshold: 0.52 },
+      { market: "Over 2.5 Goals",       prob: p.over25,   threshold: 0.50 },
+      { market: "Both Teams to Score",  prob: p.btts,     threshold: 0.52 },
+      { market: "Draw",                 prob: p.draw,     threshold: 0.32 },
+    ];
+
+    const bestBetCandidate = betCandidates
+      .filter(b => b.prob >= b.threshold)
+      .sort((a, b) => b.prob - a.prob)[0] ?? null;
+
+    const bestBet = bestBetCandidate
+      ? {
+          market: bestBetCandidate.market,
+          probability: Math.round(bestBetCandidate.prob * 100),
+          confidence: bestBetCandidate.prob >= 0.68 ? "High" : bestBetCandidate.prob >= 0.58 ? "Medium" : "Low",
+        }
+      : null;
+
+    // ── Quick Reasons (max 2) ──────────────────────────────────────────────
+    const reasons: string[] = [];
+
+    const hAvg = homeStats?.avgGoalsFor ?? 0;
+    const aAvg = awayStats?.avgGoalsFor ?? 0;
+    const combinedAvg = hAvg + aAvg;
+
+    if (combinedAvg >= 2.8)
+      reasons.push(`Combined avg ${combinedAvg.toFixed(1)} goals — high-scoring fixture`);
+    else if (combinedAvg <= 1.8)
+      reasons.push(`Low-scoring game expected — avg ${combinedAvg.toFixed(1)} goals combined`);
+
+    if ((homeStats?.bttsPct ?? 0) >= 55 && (awayStats?.bttsPct ?? 0) >= 55)
+      reasons.push("Both teams have strong BTTS rates this season");
+    else if ((homeStats?.over25Pct ?? 0) >= 60)
+      reasons.push(`${homeName} involved in Over 2.5 in ${homeStats!.over25Pct}% of games`);
+
+    if (reasons.length < 2) {
+      const homeForm = (hs?.form ?? "").slice(-5);
+      const awayForm = (as_?.form ?? "").slice(-5);
+      const homeWins = (homeForm.match(/W/g) ?? []).length;
+      const awayLosses = (awayForm.match(/L/g) ?? []).length;
+      if (homeWins >= 4)
+        reasons.push(`${homeName} in excellent form — ${homeWins} wins in last 5`);
+      else if (awayLosses >= 3)
+        reasons.push(`${awayName} struggling — ${awayLosses} losses in last 5`);
+    }
+
+    // 1-line form insight
+    const homeForm5 = (hs?.form ?? "").slice(-5);
+    const awayForm5 = (as_?.form ?? "").slice(-5);
+    const hW = (homeForm5.match(/W/g) ?? []).length;
+    const aW = (awayForm5.match(/W/g) ?? []).length;
+    const formInsight =
+      hW >= 4 && aW >= 4 ? "Both teams in strong winning form"
+      : hW >= 4            ? `${homeName} in excellent recent form`
+      : aW >= 4            ? `${awayName} in excellent recent form`
+      : hW <= 1 && aW <= 1 ? "Both teams in poor form — low-confidence match"
+      : "Evenly matched recent form";
+
     return res.json({
       ...result,
-      homeStats: mapStats(hs),
-      awayStats: mapStats(as_),
+      homeStats,
+      awayStats,
+      bestBet,
+      reasons: reasons.slice(0, 2),
+      formInsight,
       demo: false,
     });
   } catch (err: any) {
@@ -800,26 +871,81 @@ router.get("/fixture-analysis", async (req, res) => {
       avgGoals(as_, "for"), avgGoals(as_, "against")
     );
 
+    const mapStats = (s: any) => {
+      if (!s) return null;
+      const played   = s.fixtures?.played?.total ?? 0;
+      const goalsFor = s.goals?.for?.total?.total ?? 0;
+      const goalsAgainst = s.goals?.against?.total?.total ?? 0;
+      const hasData  = played > 0;
+      const avgFor   = hasData ? parseFloat((goalsFor / played).toFixed(2)) : null;
+      const avgAgainst = hasData ? parseFloat((goalsAgainst / played).toFixed(2)) : null;
+      const over25Pct = hasData && avgFor !== null && avgAgainst !== null
+        ? Math.round(Math.min(95, Math.max(5, over25Prob(avgFor + avgAgainst) * 100))) : null;
+      const bttsPct = hasData && avgFor !== null && avgAgainst !== null
+        ? Math.round(Math.min(90, Math.max(5, bttsProbability(avgFor, avgAgainst) * 100))) : null;
+      return {
+        played,
+        wins:          s.fixtures?.wins?.total  ?? 0,
+        draws:         s.fixtures?.draws?.total ?? 0,
+        losses:        s.fixtures?.loses?.total ?? 0,
+        goalsFor,
+        goalsAgainst,
+        avgGoalsFor:     avgFor,
+        avgGoalsAgainst: avgAgainst,
+        over25Pct,
+        bttsPct,
+        form: s.form ?? null,
+      };
+    };
+
+    const homeStats = mapStats(hs);
+    const awayStats = mapStats(as_);
+    const p = result.probabilities;
+
+    // Best Bet
+    const betCandidates = [
+      { market: "Home Win",             prob: p.homeWin, threshold: 0.52 },
+      { market: "Away Win",             prob: p.awayWin, threshold: 0.52 },
+      { market: "Over 2.5 Goals",       prob: p.over25,  threshold: 0.50 },
+      { market: "Both Teams to Score",  prob: p.btts,    threshold: 0.52 },
+      { market: "Draw",                 prob: p.draw,    threshold: 0.32 },
+    ];
+    const bestBetRaw = betCandidates.filter(b => b.prob >= b.threshold).sort((a, b) => b.prob - a.prob)[0] ?? null;
+    const bestBet = bestBetRaw ? {
+      market: bestBetRaw.market,
+      probability: Math.round(bestBetRaw.prob * 100),
+      confidence: bestBetRaw.prob >= 0.68 ? "High" : bestBetRaw.prob >= 0.58 ? "Medium" : "Low",
+    } : null;
+
+    // Quick Reasons
+    const reasons: string[] = [];
+    const combinedAvg = (homeStats?.avgGoalsFor ?? 0) + (awayStats?.avgGoalsFor ?? 0);
+    if (combinedAvg >= 2.8) reasons.push(`Combined avg ${combinedAvg.toFixed(1)} goals — high-scoring fixture`);
+    else if (combinedAvg <= 1.8) reasons.push(`Low-scoring game expected — avg ${combinedAvg.toFixed(1)} goals combined`);
+    if ((homeStats?.bttsPct ?? 0) >= 55 && (awayStats?.bttsPct ?? 0) >= 55)
+      reasons.push("Both teams have strong BTTS rates this season");
+    else if ((homeStats?.over25Pct ?? 0) >= 60)
+      reasons.push(`Home team involved in Over 2.5 in ${homeStats!.over25Pct}% of games`);
+
+    // Form insight
+    const hForm = (hs?.form ?? "").slice(-5);
+    const aForm = (as_?.form ?? "").slice(-5);
+    const hW = (hForm.match(/W/g) ?? []).length;
+    const aW = (aForm.match(/W/g) ?? []).length;
+    const formInsight =
+      hW >= 4 && aW >= 4 ? "Both teams in strong winning form"
+      : hW >= 4           ? "Home team in excellent recent form"
+      : aW >= 4           ? "Away team in excellent recent form"
+      : hW <= 1 && aW <= 1 ? "Both teams in poor form — low-confidence match"
+      : "Evenly matched recent form";
+
     return res.json({
       ...result,
-      homeStats: hs ? {
-        played: hs.fixtures?.played?.total,
-        wins: hs.fixtures?.wins?.total,
-        draws: hs.fixtures?.draws?.total,
-        losses: hs.fixtures?.loses?.total,
-        goalsFor: hs.goals?.for?.total?.total,
-        goalsAgainst: hs.goals?.against?.total?.total,
-        form: hs.form,
-      } : null,
-      awayStats: as_ ? {
-        played: as_.fixtures?.played?.total,
-        wins: as_.fixtures?.wins?.total,
-        draws: as_.fixtures?.draws?.total,
-        losses: as_.fixtures?.loses?.total,
-        goalsFor: as_.goals?.for?.total?.total,
-        goalsAgainst: as_.goals?.against?.total?.total,
-        form: as_.form,
-      } : null,
+      homeStats,
+      awayStats,
+      bestBet,
+      reasons: reasons.slice(0, 2),
+      formInsight,
       demo: false,
     });
   } catch (err: any) {
