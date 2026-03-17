@@ -548,6 +548,45 @@ router.get("/fixture/:id/h2h", async (req, res) => {
   }
 });
 
+// ── fixture/:id/last5 ─────────────────────────────────────────────────────────
+router.get("/fixture/:id/last5", async (req, res) => {
+  try {
+    const fixtureId = Number(req.params.id);
+
+    const { data: fixData, ok: fixOk } = await apiFetch(`/fixtures?id=${fixtureId}`, MATCH_TTL);
+    if (!fixOk || !fixData?.response?.[0]) {
+      return res.status(404).json({ error: "Fixture not found" });
+    }
+
+    const item = fixData.response[0];
+    const homeId = item.teams.home.id;
+    const awayId = item.teams.away.id;
+
+    const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
+      apiFetch(`/fixtures?team=${homeId}&last=5`, FORM_TTL),
+      apiFetch(`/fixtures?team=${awayId}&last=5`, FORM_TTL),
+    ]);
+
+    const mapFix = (f: any) => ({
+      id:       f.fixture?.id,
+      date:     f.fixture?.date,
+      homeTeam: { name: f.teams?.home?.name, logo: f.teams?.home?.logo, winner: f.teams?.home?.winner },
+      awayTeam: { name: f.teams?.away?.name, logo: f.teams?.away?.logo, winner: f.teams?.away?.winner },
+      score:    { home: f.goals?.home, away: f.goals?.away },
+      league:   { name: f.league?.name, logo: f.league?.logo },
+      status:   f.fixture?.status?.short,
+    });
+
+    return res.json({
+      home: homeOk ? (homeData?.response ?? []).map(mapFix) : [],
+      away: awayOk ? (awayData?.response ?? []).map(mapFix) : [],
+    });
+  } catch (err: any) {
+    console.error("[fixture/last5]", err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ── fixture/:id/analysis ───────────────────────────────────────────────────────
 router.get("/fixture/:id/analysis", async (req, res) => {
   try {

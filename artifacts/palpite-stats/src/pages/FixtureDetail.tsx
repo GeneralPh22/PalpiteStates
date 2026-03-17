@@ -118,8 +118,81 @@ function FormBadge({ form }: { form: string }) {
   );
 }
 
+// ── Utility ────────────────────────────────────────────────────────────────────
+function safeDate(dateStr: string | null | undefined, fmt: string): string {
+  if (!dateStr) return "—";
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return "—";
+    return format(d, fmt);
+  } catch {
+    return "—";
+  }
+}
+
+// ── Last 5 match row ───────────────────────────────────────────────────────────
+function Last5Row({ match, teamName }: { match: any; teamName: string }) {
+  const isHome   = match.homeTeam.name === teamName;
+  const hasScore = match.score.home != null && match.score.away != null;
+  const won  = hasScore && (isHome ? match.score.home > match.score.away  : match.score.away  > match.score.home);
+  const lost = hasScore && (isHome ? match.score.home < match.score.away  : match.score.away  < match.score.home);
+  const drew = hasScore && match.score.home === match.score.away;
+  const result   = won ? "W" : lost ? "L" : drew ? "D" : "?";
+  const opponent = isHome ? match.awayTeam.name : match.homeTeam.name;
+  const dispScore = hasScore
+    ? (isHome ? `${match.score.home}–${match.score.away}` : `${match.score.away}–${match.score.home}`)
+    : null;
+
+  return (
+    <div className="flex items-center gap-2.5 py-1.5 border-b border-white/[0.04] last:border-0">
+      <span className={cn(
+        "w-5 h-5 rounded text-[9px] font-bold flex items-center justify-center flex-shrink-0",
+        result === "W" && "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
+        result === "D" && "bg-zinc-500/20 text-zinc-400 border border-zinc-500/30",
+        result === "L" && "bg-red-500/20 text-red-400 border border-red-500/30",
+        result === "?" && "bg-zinc-700/30 text-zinc-600 border border-zinc-700/30",
+      )}>
+        {result}
+      </span>
+      <span className="flex-1 text-[10.5px] text-zinc-400 truncate">vs {opponent}</span>
+      {dispScore && (
+        <span className={cn(
+          "text-[10.5px] font-bold tabular-nums flex-shrink-0",
+          won ? "text-emerald-400" : lost ? "text-red-400" : "text-zinc-400"
+        )}>
+          {dispScore}
+        </span>
+      )}
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {match.league?.logo && (
+          <img src={match.league.logo} alt="" className="w-3 h-3 object-contain opacity-50" loading="lazy" />
+        )}
+        <span className="text-[9px] text-zinc-700">{safeDate(match.date, "dd/MM")}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Player strength/weakness derivation ───────────────────────────────────────
+function deriveStrength(player: any): string | null {
+  if (player.hotPlayer)  return `Scorer — ${player.avgGoals.toFixed(2)} avg goals/game`;
+  if (player.playmaker)  return `Playmaker — ${player.avgKeyPasses.toFixed(1)} key passes/game`;
+  if (player.shotVolume) return `Shooter — ${player.avgShots.toFixed(1)} shots/game`;
+  if ((player.avgRating ?? 0) >= 7.5) return `Consistent — ${player.avgRating.toFixed(1)} season rating`;
+  if (player.assists > 3) return `Assist provider — ${player.assists} assists`;
+  return null;
+}
+
+function deriveWeakness(player: any): string | null {
+  if (player.cardRisk) return `Card risk — ${player.yellowCards + player.redCards} cards this season`;
+  if ((player.avgRating ?? 10) < 6.5 && player.appearances > 4) return `Below average rating — ${player.avgRating?.toFixed(1) ?? "?"}/10`;
+  if (player.shots > 5 && player.shotsOnTarget > 0 && player.shotsOnTarget / player.shots < 0.25)
+    return `Low accuracy — ${Math.round(player.shotsOnTarget / player.shots * 100)}% shots on target`;
+  return null;
+}
+
 // ── TAB: Overview ──────────────────────────────────────────────────────────────
-function TabOverview({ fixture, analysis }: { fixture: Fixture; analysis: any }) {
+function TabOverview({ fixture, analysis, last5Data }: { fixture: Fixture; analysis: any; last5Data?: any }) {
   if (!analysis) {
     return (
       <div className="flex items-center justify-center py-16 text-zinc-600 gap-2">
@@ -241,6 +314,38 @@ function TabOverview({ fixture, analysis }: { fixture: Fixture; analysis: any })
           )}
         </div>
       )}
+
+      {/* ── Last 5 Matches Per Team ── */}
+      {last5Data && (last5Data.home?.length > 0 || last5Data.away?.length > 0) && (
+        <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4 space-y-4">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <Activity className="w-4 h-4 text-primary" />
+            Last 5 Matches
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[
+              { name: fixture.homeTeam.name, logo: fixture.homeTeam.logo, matches: last5Data.home ?? [] },
+              { name: fixture.awayTeam.name, logo: fixture.awayTeam.logo, matches: last5Data.away ?? [] },
+            ].map(({ name, logo, matches }) => (
+              <div key={name}>
+                <div className="flex items-center gap-2 mb-2">
+                  {logo && <img src={logo} alt="" className="w-4 h-4 object-contain" loading="lazy" />}
+                  <span className="text-[10.5px] font-bold text-zinc-400 uppercase tracking-wide truncate">{name}</span>
+                </div>
+                {matches.length === 0 ? (
+                  <p className="text-[10px] text-zinc-700 italic">No recent data</p>
+                ) : (
+                  <div>
+                    {matches.map((m: any, i: number) => (
+                      <Last5Row key={m.id ?? i} match={m} teamName={name} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -314,16 +419,6 @@ function TabTeamStats({ fixture, stats }: { fixture: Fixture; stats: any }) {
 }
 
 // ── TAB: H2H ──────────────────────────────────────────────────────────────────
-function safeDate(dateStr: string | null | undefined, fmt: string): string {
-  if (!dateStr) return "—";
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return "—";
-    return format(d, fmt);
-  } catch {
-    return "—";
-  }
-}
 
 function TabH2H({ h2h, fixture }: { h2h: any; fixture: Fixture }) {
   if (!h2h) {
@@ -489,7 +584,7 @@ function TabOdds({ oddsData, fixture, analysis }: { oddsData: any; fixture: Fixt
       }
     : null;
 
-  const isValue = (odd: number | null, fair: string | null) => {
+  const isValue = (odd: number | null | undefined, fair: string | null | undefined) => {
     if (!odd || !fair) return false;
     return odd > parseFloat(fair);
   };
@@ -899,6 +994,17 @@ function TabAI({ fixture, analysis, oddsData, h2hData }: {
           ⚠️ Predictions are statistical estimates only. No outcome is guaranteed. Bet responsibly.
         </p>
       </div>
+
+      {/* ── Responsible Gambling ─────────────────────────────────── */}
+      <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] px-4 py-3 flex items-start gap-3">
+        <span className="text-base flex-shrink-0 mt-0.5">⚠️</span>
+        <p className="text-[10px] text-zinc-600 leading-relaxed">
+          <span className="font-semibold text-zinc-500">Bet responsibly.</span>{" "}
+          All predictions are based on statistical models and probabilities. No outcome is guaranteed.
+          If you or someone you know has a gambling problem, call the support line:{" "}
+          <span className="font-semibold text-zinc-400">CVV 188</span>.
+        </p>
+      </div>
     </div>
   );
 }
@@ -1084,12 +1190,32 @@ function SquadPlayerCard({ player }: { player: SquadPlayer }) {
           </div>
 
           {/* Rating bar */}
-          <div className="mx-3 mb-3">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[9px] font-bold text-zinc-600 uppercase tracking-wider">Season Rating</span>
-            </div>
+          <div className="mx-3 mb-2.5">
             <RatingBar rating={player.avgRating} />
           </div>
+
+          {/* Strength / Weakness */}
+          {(() => {
+            const strength = deriveStrength(player);
+            const weakness = deriveWeakness(player);
+            if (!strength && !weakness) return null;
+            return (
+              <div className="mx-3 mb-3 space-y-1">
+                {strength && (
+                  <div className="flex items-start gap-1.5 text-[9.5px]">
+                    <span className="text-emerald-400 flex-shrink-0 font-bold">✓</span>
+                    <span className="text-emerald-400/80">{strength}</span>
+                  </div>
+                )}
+                {weakness && (
+                  <div className="flex items-start gap-1.5 text-[9.5px]">
+                    <span className="text-red-400/70 flex-shrink-0 font-bold">✗</span>
+                    <span className="text-red-400/60">{weakness}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </>
       ) : (
         <p className="text-[10px] text-zinc-700 italic px-3 pb-3">Player performance data updating.</p>
@@ -1330,6 +1456,21 @@ export default function FixtureDetail() {
     staleTime: 10 * 60 * 1000,
   });
 
+  const { data: last5Data } = useQuery({
+    queryKey: ["fixture-last5", id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}/last5`);
+        if (!res.ok) return { home: [], away: [] };
+        return res.json();
+      } catch {
+        return { home: [], away: [] };
+      }
+    },
+    enabled: activeTab === "overview" && !!fixture,
+    staleTime: 30 * 60 * 1000,
+  });
+
   const { data: oddsData } = useQuery({
     queryKey: ["fixture-odds", id],
     queryFn: async () => {
@@ -1553,7 +1694,7 @@ export default function FixtureDetail() {
         >
           {(() => {
             switch (activeTab) {
-              case "overview": return <TabOverview fixture={fixture} analysis={analysis} />;
+              case "overview": return <TabOverview fixture={fixture} analysis={analysis} last5Data={last5Data} />;
               case "stats":    return <TabTeamStats fixture={fixture} stats={statsData} />;
               case "h2h":      return <TabH2H h2h={h2hData} fixture={fixture} />;
               case "players":  return <TabPlayers data={playersData} />;
