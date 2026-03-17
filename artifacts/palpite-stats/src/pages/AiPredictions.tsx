@@ -143,8 +143,10 @@ export default function AiPredictions() {
             
             {aiPredictMutation.isPending && (
               <motion.div
+                key="ai-pending-indicator"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
                 className="flex gap-4 max-w-[85%] mr-auto"
               >
                 <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 border border-primary/50 bg-gradient-to-br from-primary to-emerald-700 shadow-lg">

@@ -1,7 +1,7 @@
 import { useGetMatches } from "@workspace/api-client-react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { Link } from "wouter";
 import { useState, useMemo } from "react";
 import {
@@ -273,23 +273,18 @@ function LeagueSection({ group, startIdx }: { group: LeagueGroup; startIdx: numb
         <ChevronDown className={cn("w-3.5 h-3.5 text-zinc-600 transition-transform flex-shrink-0", collapsed && "rotate-180")} />
       </button>
 
-      <AnimatePresence initial={false}>
-        {!collapsed && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.22 }}
-            className="overflow-hidden"
-          >
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-2.5 pb-1">
-              {group.matches.map((match, i) => (
-                <MatchCard key={match.id} match={match} idx={startIdx + i} />
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <motion.div
+        initial={false}
+        animate={collapsed ? { height: 0, opacity: 0 } : { height: "auto", opacity: 1 }}
+        transition={{ duration: 0.22 }}
+        className="overflow-hidden"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-2.5 pb-1">
+          {group.matches.map((match, i) => (
+            <MatchCard key={match.id} match={match} idx={startIdx + i} />
+          ))}
+        </div>
+      </motion.div>
     </div>
   );
 }
