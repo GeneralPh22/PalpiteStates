@@ -86,6 +86,32 @@ function useTodayMatches() {
   });
 }
 
+interface PreliveResponse {
+  total: number;
+  matches: LiveMatch[];
+  available: boolean;
+  message?: string;
+  leaguesFound?: number[];
+  leaguesMissing?: number[];
+}
+
+function usePreliveMatches() {
+  return useQuery<PreliveResponse>({
+    queryKey: ["prelive-matches"],
+    queryFn: async () => {
+      const res = await fetch(`${BASE}/api/prelive-matches`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,        // 5 min – top-league upcoming data changes slowly
+    gcTime: 30 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,  // re-fetch every 5 min in background
+    refetchIntervalInBackground: true,
+    retry: 2,
+    retryDelay: 15 * 1000,
+  });
+}
+
 function isLiveStatus(short: string) {
   return LIVE_STATUSES.has(short);
 }
@@ -334,7 +360,19 @@ export default function Home() {
     refetch: refetchLive,
   } = useTodayMatches();
 
-  const allMatches  = liveData?.matches    ?? [];
+  const { data: preliveData } = usePreliveMatches();
+
+  // Merge pre-live top-league fixtures into the main match pool.
+  // Dedup by fixture ID so a match already in the main feed isn't duplicated.
+  const allMatches = useMemo(() => {
+    const main = liveData?.matches ?? [];
+    const prelive = preliveData?.matches ?? [];
+    if (prelive.length === 0) return main;
+    const seen = new Set(main.map(m => m.id));
+    const extra = prelive.filter(m => !seen.has(m.id));
+    return [...main, ...extra];
+  }, [liveData?.matches, preliveData?.matches]);
+
   const isStale     = liveData?.stale      === true;
   const isUpcoming  = liveData?.isUpcoming === true;
   const apiStatus   = liveData?.apiStatus  ?? "";

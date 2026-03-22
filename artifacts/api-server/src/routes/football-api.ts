@@ -3,6 +3,7 @@ import {
   getFixturesFromDB,
   saveFixturesToDB,
   isDBFresh,
+  getTopLeaguePrelivFromDB,
   type CachedFixture,
 } from "../lib/fixture-db.js";
 
@@ -21,11 +22,15 @@ const TOP_LEAGUES = [
   3,    // Europa League
 ];
 
+// The 6 main leagues always guaranteed in pre-live section
+const TOP_SIX_LEAGUES = [39, 140, 78, 61, 135, 71];
+
 const cache = new Map<string, { data: unknown; ts: number }>();
 const ODDS_TTL = 5 * 60 * 1000;       // 5 minutes
 const STATS_TTL = 10 * 60 * 1000;     // 10 minutes
 const MATCH_TTL = 2 * 60 * 1000;      // 2 minutes
 const FIXTURE_LIST_TTL = 5 * 60 * 1000;  //  5 minutes – homepage fixture lists
+const PRELIVE_TTL = 60 * 1000;           // 60 seconds – pre-live fixtures (in-memory dedup)
 const SQUAD_TTL = 24 * 60 * 60 * 1000;   // 24 hours  – squad roster
 const FORM_TTL  =  6 * 60 * 60 * 1000;   //  6 hours   – player performance stats
 
@@ -361,6 +366,87 @@ function scheduleBackgroundRefresh() {
 
 scheduleBackgroundRefresh();
 
+// ── Pre-live top-league refresh ────────────────────────────────────────────
+// Runs on startup (after 8s to avoid racing with bg refresh) then every 6h.
+// Fetches upcoming NS fixtures for the 6 main leagues so they're always in DB.
+// API cost: up to 6 calls per run (one per league), max twice per 6-hour window.
+const PRELIVE_REFRESH_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
+let preliveRefreshRunning = false;
+let lastPreliveRefresh = 0;
+
+async function fetchTopLeaguePrelive(forceMissing?: number[]): Promise<void> {
+  if (preliveRefreshRunning) return;
+  preliveRefreshRunning = true;
+
+  try {
+    // Check which top leagues already have upcoming fixtures in the DB
+    // If forceMissing is provided, skip leagues already in DB entirely
+    const { leaguesFound } = forceMissing
+      ? { leaguesFound: new Set<number>() }
+      : await getTopLeaguePrelivFromDB(TOP_SIX_LEAGUES);
+
+    const missing = (forceMissing ?? TOP_SIX_LEAGUES).filter(id => !leaguesFound.has(id));
+
+    if (missing.length === 0) {
+      console.log("[prelive-refresh] All top leagues already in DB — skipping API calls");
+      lastPreliveRefresh = Date.now();
+      return;
+    }
+
+    console.log(`[prelive-refresh] Fetching upcoming fixtures for leagues: ${missing.join(", ")}`);
+    const all: any[] = [];
+
+    for (const leagueId of missing) {
+      if (apiSuspended) break;
+
+      // Try ?next=5 (works on paid plans)
+      const { data: nextData, ok: nextOk } = await apiFetch(
+        `/fixtures?league=${leagueId}&season=2025&next=5`,
+        PRELIVE_TTL
+      );
+      if (nextOk && nextData && (nextData.results ?? 0) > 0) {
+        all.push(...(nextData.response ?? []));
+        continue;
+      }
+
+      // Fallback: try next 7 days by date — stop at first day that has matches
+      for (let d = 0; d <= 6; d++) {
+        if (apiSuspended) break;
+        const dateStr = new Date(Date.now() + d * 86_400_000).toISOString().split("T")[0];
+        const { data: dayData, ok: dayOk } = await apiFetch(
+          `/fixtures?league=${leagueId}&season=2025&date=${dateStr}`,
+          PRELIVE_TTL
+        );
+        if (dayOk && dayData && (dayData.results ?? 0) > 0) {
+          all.push(...(dayData.response ?? []));
+          break; // found a day with matches for this league — move on
+        }
+      }
+    }
+
+    if (all.length > 0) {
+      await saveFixturesToDB(all);
+      console.log(`[prelive-refresh] Saved ${all.length} pre-live fixtures for top leagues`);
+    } else {
+      console.log("[prelive-refresh] No upcoming top-league fixtures found (API may be suspended)");
+    }
+
+    lastPreliveRefresh = now;
+  } catch (err: any) {
+    console.error("[prelive-refresh] Error:", err.message);
+  } finally {
+    preliveRefreshRunning = false;
+  }
+}
+
+function schedulePreliveRefresh() {
+  // First run: 8 seconds after startup (after bg-refresh starts at 2s)
+  setTimeout(fetchTopLeaguePrelive, 8_000);
+  setInterval(fetchTopLeaguePrelive, PRELIVE_REFRESH_INTERVAL);
+}
+
+schedulePreliveRefresh();
+
 // ── Live-match 60-second poller ────────────────────────────────────────────
 // Polls /fixtures?live=all every 60s — only when live matches exist in DB.
 // Single efficient API call; result updates those specific fixtures in DB.
@@ -390,6 +476,62 @@ async function refreshLiveMatches() {
 }
 
 setInterval(refreshLiveMatches, 60 * 1000);
+
+// ── prelive-matches ────────────────────────────────────────────────────────────
+// Always returns upcoming (NS) fixtures from the 6 main leagues.
+// Reads from DB cache first; triggers background refresh if any league is missing.
+// Sort: by kickoff time ascending (earliest first).
+router.get("/prelive-matches", async (_req, res) => {
+  try {
+    const { fixtures: dbFixtures, leaguesFound } = await getTopLeaguePrelivFromDB(TOP_SIX_LEAGUES);
+
+    // Kick off a background refresh for any missing leagues (non-blocking)
+    const missingLeagues = TOP_SIX_LEAGUES.filter(id => !leaguesFound.has(id));
+    if (missingLeagues.length > 0 && !apiSuspended) {
+      fetchTopLeaguePrelive(missingLeagues).catch(() => {});
+    }
+
+    if (dbFixtures.length === 0) {
+      return res.json({
+        total: 0,
+        matches: [],
+        available: false,
+        message: "Próximos jogos indisponíveis no momento",
+        leaguesFound: [],
+        leaguesMissing: TOP_SIX_LEAGUES,
+      });
+    }
+
+    // Map CachedFixture → LiveMatch-compatible shape
+    const matches = dbFixtures
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+      .map(f => ({
+        id: f.id,
+        date: f.date,
+        status: f.status,
+        league: { ...f.league, flag: "" },  // flag not stored in DB; frontend handles it gracefully
+        homeTeam: f.homeTeam,
+        awayTeam: f.awayTeam,
+        score: f.score,
+      }));
+
+    return res.json({
+      total: matches.length,
+      matches,
+      available: true,
+      leaguesFound: Array.from(leaguesFound),
+      leaguesMissing: missingLeagues,
+    });
+  } catch (err: any) {
+    console.error("[prelive-matches] Error:", err.message);
+    return res.json({
+      total: 0,
+      matches: [],
+      available: false,
+      message: "Próximos jogos indisponíveis no momento",
+    });
+  }
+});
 
 // ── matches-today ──────────────────────────────────────────────────────────────
 router.get("/matches-today", async (_req, res) => {

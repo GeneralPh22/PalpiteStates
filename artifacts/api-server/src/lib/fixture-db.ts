@@ -182,6 +182,37 @@ export async function saveFixturesToDB(fixtures: any[]): Promise<void> {
   console.log(`[fixture-db] Saved ${saved}/${fixtures.length} fixtures to DB`);
 }
 
+/**
+ * Get upcoming (NS-status) fixtures for a specific list of league IDs.
+ * Used by the pre-live refresh to check which top leagues are already represented.
+ */
+export async function getTopLeaguePrelivFromDB(leagueIds: number[]): Promise<{
+  fixtures: CachedFixture[];
+  leaguesFound: Set<number>;
+}> {
+  if (leagueIds.length === 0) return { fixtures: [], leaguesFound: new Set() };
+  try {
+    const pool = getPool();
+    const placeholders = leagueIds.map((_, i) => `$${i + 1}`).join(", ");
+    const result = await pool.query(
+      `SELECT * FROM fixtures_cache
+       WHERE status_short = 'NS'
+         AND match_date >= NOW()
+         AND match_date <= NOW() + INTERVAL '14 days'
+         AND league_id = ANY(ARRAY[${placeholders}]::int[])
+       ORDER BY match_date ASC
+       LIMIT 100`,
+      leagueIds
+    );
+    const fixtures = result.rows.map(rowToFixture);
+    const leaguesFound = new Set(result.rows.map((r: any) => Number(r.league_id)));
+    return { fixtures, leaguesFound };
+  } catch (err: any) {
+    console.error("[fixture-db] getTopLeaguePrelivFromDB error:", err.message);
+    return { fixtures: [], leaguesFound: new Set() };
+  }
+}
+
 // ── Staleness ────────────────────────────────────────────────────────────────
 
 const FIXTURE_FRESH_MS = 10 * 60 * 1000; // 10 minutes
