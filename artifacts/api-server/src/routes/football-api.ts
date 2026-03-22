@@ -447,6 +447,170 @@ function schedulePreliveRefresh() {
 
 schedulePreliveRefresh();
 
+// ── Featured cache: Top Bets + Hot Matches ─────────────────────────────────
+// Pre-computes the "Top 3 apostas do dia" and "Jogos quentes" from DB fixtures.
+// API cost: 2 calls per analyzed fixture (team stats for home + away), max 6 fixtures.
+// Cache TTL: 30 minutes. Triggers automatically after prelive refresh.
+
+interface FeaturedBet {
+  fixtureId: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeLogo: string;
+  awayLogo: string;
+  league: { id: number; name: string; country: string; logo: string };
+  date: string;
+  market: string;
+  probability: number;
+  confidence: "High" | "Medium" | "Low";
+  marketRating: string;
+  insight: string;
+}
+
+interface HotMatch {
+  fixtureId: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeLogo: string;
+  awayLogo: string;
+  league: { id: number; name: string; country: string; logo: string };
+  date: string;
+  avgGoals: number | null;
+  reason: string;
+  hotScore: number;
+}
+
+let topBetsCache: { bets: FeaturedBet[]; ts: number } | null = null;
+let hotMatchesCache: { matches: HotMatch[]; ts: number } | null = null;
+let featuredRefreshRunning = false;
+const FEATURED_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+async function warmupFeaturedCache(): Promise<void> {
+  if (featuredRefreshRunning) return;
+  featuredRefreshRunning = true;
+  try {
+    const { fixtures: prelive } = await getTopLeaguePrelivFromDB(TOP_SIX_LEAGUES);
+    if (prelive.length === 0) {
+      console.log("[featured-cache] No prelive fixtures in DB — skipping");
+      return;
+    }
+
+    // Pick earliest fixture per league — max 6 fixtures total
+    const perLeague = new Map<number, CachedFixture>();
+    for (const f of prelive) {
+      if (!perLeague.has(f.league.id)) perLeague.set(f.league.id, f);
+    }
+    const candidates = Array.from(perLeague.values());
+    console.log(`[featured-cache] Analyzing ${candidates.length} fixtures for top bets / hot matches`);
+
+    const bets: FeaturedBet[] = [];
+    const hots: HotMatch[] = [];
+
+    for (const f of candidates) {
+      if (apiSuspended) break;
+
+      const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
+        apiFetch(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+        apiFetch(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+      ]);
+
+      const getAvg = (d: any, type: "for" | "against"): number => {
+        const s = d?.response;
+        if (!s) return 1.3;
+        const g = type === "for" ? s.goals?.for : s.goals?.against;
+        const total = g?.total?.total ?? 0;
+        const played = s.fixtures?.played?.total ?? 1;
+        return played > 0 ? total / played : 1.3;
+      };
+
+      const hasStats = homeOk && homeData?.response?.fixtures?.played?.total > 0
+                    && awayOk && awayData?.response?.fixtures?.played?.total > 0;
+
+      const hAtt = getAvg(homeData, "for");
+      const hDef = getAvg(homeData, "against");
+      const aAtt = getAvg(awayData, "for");
+      const aDef = getAvg(awayData, "against");
+      const avgGoals = hasStats ? parseFloat((hAtt + aAtt).toFixed(2)) : null;
+
+      const probs = calcMatchProbabilities(hAtt, hDef, aAtt, aDef).probabilities;
+
+      const homeName = f.homeTeam.name;
+      const awayName = f.awayTeam.name;
+
+      const betCandidates = [
+        { market: `${homeName} Ganha`,  prob: probs.homeWin },
+        { market: `${awayName} Ganha`,  prob: probs.awayWin },
+        { market: "Mais de 2.5 Gols",   prob: probs.over25  },
+        { market: "Ambas Marcam",        prob: probs.btts    },
+      ];
+      const best = betCandidates.sort((a, b) => b.prob - a.prob)[0];
+      const probability = Math.round(best.prob * 100);
+
+      const confidence: "High" | "Medium" | "Low" =
+        probability >= 68 ? "High" : probability >= 58 ? "Medium" : "Low";
+      const marketRating =
+        probability >= 76 ? "Strong Value"
+        : probability >= 61 ? "Boa Oportunidade"
+        : probability >= 46 ? "Moderado"
+        : "Baixa Confiança";
+
+      let insight = "Análise baseada em dados da temporada 2025.";
+      if (avgGoals !== null && avgGoals >= 2.8)
+        insight = `Média combinada de ${avgGoals.toFixed(1)} gols — jogo com tendência de muitos gols.`;
+      else if (best.market === "Ambas Marcam" && probability >= 60)
+        insight = "Alta frequência de ambas as equipes marcarem nesta temporada.";
+      else if (best.market === "Mais de 2.5 Gols" && probability >= 60)
+        insight = `Ambas as equipes marcam em média mais de 1.3 gols. Fixture de alto valor.`;
+      else if (best.market.includes("Ganha") && probability >= 65)
+        insight = `${best.market.replace(" Ganha", "")} em vantagem pelo desempenho recente.`;
+
+      const leagueInfo = { id: f.league.id, name: f.league.name, country: f.league.country, logo: f.league.logo };
+
+      if (probability >= 65) {
+        bets.push({
+          fixtureId: f.id, homeTeam: homeName, awayTeam: awayName,
+          homeLogo: f.homeTeam.logo, awayLogo: f.awayTeam.logo,
+          league: leagueInfo, date: f.date,
+          market: best.market, probability, confidence, marketRating, insight,
+        });
+      }
+
+      const leaguePriorityScore = 8 - (TOP_SIX_LEAGUES.indexOf(f.league.id) === -1 ? 9 : TOP_SIX_LEAGUES.indexOf(f.league.id));
+      const goalTrendScore = avgGoals != null ? Math.min(avgGoals / 4.0, 1.0) * 3.0 : 0;
+      const hotScore = parseFloat((leaguePriorityScore + goalTrendScore).toFixed(2));
+
+      hots.push({
+        fixtureId: f.id, homeTeam: homeName, awayTeam: awayName,
+        homeLogo: f.homeTeam.logo, awayLogo: f.awayTeam.logo,
+        league: leagueInfo, date: f.date, avgGoals, hotScore,
+        reason: avgGoals !== null
+          ? `Média de ${avgGoals.toFixed(1)} gols/jogo · ${leagueInfo.name}`
+          : `Jogo de alto interesse · ${leagueInfo.name}`,
+      });
+    }
+
+    topBetsCache = { bets: bets.sort((a, b) => b.probability - a.probability).slice(0, 3), ts: Date.now() };
+    hotMatchesCache = { matches: hots.sort((a, b) => b.hotScore - a.hotScore).slice(0, 5), ts: Date.now() };
+    console.log(`[featured-cache] Computed ${topBetsCache.bets.length} top bets, ${hotMatchesCache.matches.length} hot matches`);
+  } catch (err: any) {
+    console.error("[featured-cache] Error:", err.message);
+  } finally {
+    featuredRefreshRunning = false;
+  }
+}
+
+function scheduleFeaturedRefresh() {
+  // Run 12s after startup (after prelive-refresh at 8s), then every 30 min
+  setTimeout(warmupFeaturedCache, 12_000);
+  setInterval(() => {
+    if (!topBetsCache || Date.now() - topBetsCache.ts > FEATURED_CACHE_TTL) {
+      warmupFeaturedCache().catch(() => {});
+    }
+  }, FEATURED_CACHE_TTL);
+}
+
+scheduleFeaturedRefresh();
+
 // ── Live-match 60-second poller ────────────────────────────────────────────
 // Polls /fixtures?live=all every 60s — only when live matches exist in DB.
 // Single efficient API call; result updates those specific fixtures in DB.
@@ -476,6 +640,42 @@ async function refreshLiveMatches() {
 }
 
 setInterval(refreshLiveMatches, 60 * 1000);
+
+// ── top-bets ──────────────────────────────────────────────────────────────────
+router.get("/top-bets", async (_req, res) => {
+  try {
+    if (!topBetsCache || Date.now() - topBetsCache.ts > FEATURED_CACHE_TTL) {
+      warmupFeaturedCache().catch(() => {});
+    }
+    const bets = topBetsCache?.bets ?? [];
+    return res.json({
+      available: bets.length > 0,
+      bets,
+      updatedAt: topBetsCache?.ts ?? null,
+    });
+  } catch (err: any) {
+    console.error("[top-bets] Error:", err.message);
+    return res.json({ available: false, bets: [] });
+  }
+});
+
+// ── hot-matches ────────────────────────────────────────────────────────────────
+router.get("/hot-matches", async (_req, res) => {
+  try {
+    if (!hotMatchesCache || Date.now() - hotMatchesCache.ts > FEATURED_CACHE_TTL) {
+      warmupFeaturedCache().catch(() => {});
+    }
+    const matches = hotMatchesCache?.matches ?? [];
+    return res.json({
+      available: matches.length > 0,
+      matches,
+      updatedAt: hotMatchesCache?.ts ?? null,
+    });
+  } catch (err: any) {
+    console.error("[hot-matches] Error:", err.message);
+    return res.json({ available: false, matches: [] });
+  }
+});
 
 // ── prelive-matches ────────────────────────────────────────────────────────────
 // Always returns upcoming (NS) fixtures from the 6 main leagues.

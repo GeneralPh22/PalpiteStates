@@ -112,6 +112,237 @@ function usePreliveMatches() {
   });
 }
 
+interface FeaturedBet {
+  fixtureId: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeLogo: string;
+  awayLogo: string;
+  league: { id: number; name: string; country: string; logo: string };
+  date: string;
+  market: string;
+  probability: number;
+  confidence: "High" | "Medium" | "Low";
+  marketRating: string;
+  insight: string;
+}
+
+interface HotMatchItem {
+  fixtureId: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeLogo: string;
+  awayLogo: string;
+  league: { id: number; name: string; country: string; logo: string };
+  date: string;
+  avgGoals: number | null;
+  reason: string;
+  hotScore: number;
+}
+
+function useTopBets() {
+  return useQuery<{ available: boolean; bets: FeaturedBet[] }>({
+    queryKey: ["top-bets"],
+    queryFn: async () => {
+      const res = await fetch(`${BASE}/api/top-bets`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    staleTime: 30 * 60 * 1000,
+    gcTime: 60 * 60 * 1000,
+    refetchInterval: 30 * 60 * 1000,
+    retry: 2,
+  });
+}
+
+function useHotMatches() {
+  return useQuery<{ available: boolean; matches: HotMatchItem[] }>({
+    queryKey: ["hot-matches"],
+    queryFn: async () => {
+      const res = await fetch(`${BASE}/api/hot-matches`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    staleTime: 30 * 60 * 1000,
+    gcTime: 60 * 60 * 1000,
+    refetchInterval: 30 * 60 * 1000,
+    retry: 2,
+  });
+}
+
+function confidenceColor(c: FeaturedBet["confidence"]) {
+  return c === "High" ? "text-emerald-400 bg-emerald-400/10 border-emerald-400/25"
+    : c === "Medium" ? "text-amber-400 bg-amber-400/10 border-amber-400/25"
+    : "text-zinc-400 bg-zinc-400/10 border-zinc-400/20";
+}
+
+function ProbabilityRing({ value }: { value: number }) {
+  const color = value >= 76 ? "text-emerald-400" : value >= 61 ? "text-amber-400" : "text-blue-400";
+  return (
+    <div className={`text-2xl font-black tabular-nums ${color}`}>
+      {value}%
+    </div>
+  );
+}
+
+function TeamLogoName({ logo, name }: { logo: string; name: string }) {
+  return (
+    <div className="flex items-center gap-1.5 min-w-0">
+      {logo ? (
+        <img src={logo} alt={name} className="w-5 h-5 object-contain flex-shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+      ) : null}
+      <span className="text-xs font-semibold text-white truncate">{name}</span>
+    </div>
+  );
+}
+
+function TopBetsSection() {
+  const { data, isLoading } = useTopBets();
+  const bets = data?.bets ?? [];
+
+  if (isLoading) return (
+    <div className="flex items-center gap-2 text-zinc-600 text-xs py-4">
+      <Loader2 className="w-4 h-4 animate-spin" />
+      Calculando melhores apostas...
+    </div>
+  );
+  if (!data?.available || bets.length === 0) return null;
+
+  return (
+    <div className="mb-10">
+      <div className="flex items-center gap-2 mb-4">
+        <Flame className="w-5 h-5 text-orange-400" />
+        <h2 className="text-lg font-display font-bold text-white">Top 3 Apostas do Dia</h2>
+        <span className="text-xs text-zinc-600 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.07]">
+          Análise AI · dados reais
+        </span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {bets.map((bet, i) => (
+          <div key={bet.fixtureId} className="rounded-2xl border border-white/[0.08] bg-white/[0.03] overflow-hidden hover:border-white/[0.14] transition-colors">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-orange-500/10 to-amber-500/5 px-4 py-3 border-b border-white/[0.06] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                {bet.league.logo && (
+                  <img src={bet.league.logo} alt={bet.league.name} className="w-4 h-4 object-contain flex-shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                )}
+                <span className="text-[10px] text-zinc-400 truncate">{bet.league.name}</span>
+              </div>
+              <span className="text-[10px] text-orange-400 font-bold flex-shrink-0">#{i + 1}</span>
+            </div>
+
+            <div className="px-4 py-3 space-y-3">
+              {/* Teams */}
+              <div className="space-y-1.5">
+                <TeamLogoName logo={bet.homeLogo} name={bet.homeTeam} />
+                <div className="text-[9px] text-zinc-700 pl-1">vs</div>
+                <TeamLogoName logo={bet.awayLogo} name={bet.awayTeam} />
+              </div>
+
+              {/* Market + Probability */}
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2.5 space-y-1">
+                <div className="text-[9px] text-zinc-600 uppercase tracking-widest font-semibold">Previsão</div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-bold text-white leading-tight">{bet.market}</span>
+                  <ProbabilityRing value={bet.probability} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border ${confidenceColor(bet.confidence)}`}>
+                    {bet.marketRating}
+                  </span>
+                </div>
+              </div>
+
+              {/* Insight */}
+              <p className="text-[10px] text-zinc-500 leading-relaxed">{bet.insight}</p>
+
+              {/* Affiliate buttons */}
+              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/[0.05]">
+                <a
+                  href="https://referme.to/pedroa-6161"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-1 rounded-lg bg-[#e63946]/15 border border-[#e63946]/30 hover:bg-[#e63946]/25 px-2 py-1.5 transition-colors"
+                >
+                  <span className="text-[10px] font-semibold text-[#e63946]">Apostar Betano</span>
+                </a>
+                <a
+                  href="https://promos.betfair.bet.br/choose-your-refer-and-earn-offer?referrerCode=PAXVX77DL"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-1 rounded-lg bg-[#f9a825]/10 border border-[#f9a825]/25 hover:bg-[#f9a825]/20 px-2 py-1.5 transition-colors"
+                >
+                  <span className="text-[10px] font-semibold text-[#f9a825]">Ver Betfair</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HotMatchesSection() {
+  const { data, isLoading } = useHotMatches();
+  const matches = data?.matches ?? [];
+
+  if (isLoading) return (
+    <div className="flex items-center gap-2 text-zinc-600 text-xs py-2">
+      <Loader2 className="w-4 h-4 animate-spin" />
+      Carregando jogos quentes...
+    </div>
+  );
+  if (!data?.available || matches.length === 0) return null;
+
+  return (
+    <div className="mb-10">
+      <div className="flex items-center gap-2 mb-4">
+        <Target className="w-5 h-5 text-red-400" />
+        <h2 className="text-lg font-display font-bold text-white">Jogos Quentes do Dia</h2>
+        <span className="text-xs text-zinc-600 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.07]">
+          Principais ligas
+        </span>
+      </div>
+      <div className="flex flex-col gap-2">
+        {matches.map(m => (
+          <Link key={m.fixtureId} href={`/fixture/${m.fixtureId}`}>
+            <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3 flex items-center gap-4 hover:border-white/[0.14] hover:bg-white/[0.04] transition-all cursor-pointer">
+              {/* League */}
+              <div className="flex items-center gap-1.5 w-32 flex-shrink-0">
+                {m.league.logo && (
+                  <img src={m.league.logo} alt={m.league.name} className="w-4 h-4 object-contain" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                )}
+                <span className="text-[10px] text-zinc-500 truncate">{m.league.name}</span>
+              </div>
+
+              {/* Teams */}
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <TeamLogoName logo={m.homeLogo} name={m.homeTeam} />
+                <span className="text-zinc-700 text-xs flex-shrink-0">×</span>
+                <TeamLogoName logo={m.awayLogo} name={m.awayTeam} />
+              </div>
+
+              {/* Stats */}
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {m.avgGoals !== null && (
+                  <div className="text-right">
+                    <div className="text-[8.5px] text-zinc-700 uppercase tracking-wider">Média gols</div>
+                    <div className="text-sm font-bold text-amber-400 tabular-nums">{m.avgGoals.toFixed(1)}</div>
+                  </div>
+                )}
+                <div className="text-zinc-800">
+                  <ChevronRight className="w-4 h-4" />
+                </div>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function isLiveStatus(short: string) {
   return LIVE_STATUSES.has(short);
 }
@@ -475,8 +706,14 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Matches section */}
+      {/* Featured sections: Top Bets + Hot Matches */}
       <div className="container mx-auto px-4 md:px-6 mt-10 relative z-20">
+        <TopBetsSection />
+        <HotMatchesSection />
+      </div>
+
+      {/* Matches section */}
+      <div className="container mx-auto px-4 md:px-6 mt-4 relative z-20">
 
         {/* Header row */}
         <div className="flex flex-wrap items-center gap-3 mb-5">

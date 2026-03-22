@@ -357,6 +357,25 @@ export function MatchInsights({ fixtureId, homeTeamId, awayTeamId, leagueId, hom
                           </ul>
                         )}
                       </div>
+                      {/* ── Affiliate buttons ── */}
+                      <div className="grid grid-cols-2 gap-2 pt-0.5">
+                        <a
+                          href="https://referme.to/pedroa-6161"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center justify-center rounded-lg bg-[#e63946]/12 border border-[#e63946]/28 hover:bg-[#e63946]/22 px-2 py-1.5 transition-colors"
+                        >
+                          <span className="text-[10px] font-semibold text-[#e63946]">Apostar na Betano</span>
+                        </a>
+                        <a
+                          href="https://promos.betfair.bet.br/choose-your-refer-and-earn-offer?referrerCode=PAXVX77DL"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center justify-center rounded-lg bg-[#f9a825]/8 border border-[#f9a825]/22 hover:bg-[#f9a825]/18 px-2 py-1.5 transition-colors"
+                        >
+                          <span className="text-[10px] font-semibold text-[#f9a825]">Ver odds Betfair</span>
+                        </a>
+                      </div>
                     </div>
                   )}
                 </>

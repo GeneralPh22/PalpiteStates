@@ -118,6 +118,9 @@ All endpoints automatically fall back to rich demo data when API-Football is una
 - `GET /api/fixture/:id/team-stats` — Season statistics for both teams (season=2025, fallback to last-5)
 - `GET /api/fixture/:id/last5` — Last 5 matches for each team
 - `GET /api/fixture/:id/h2h` — Head-to-head history (last 3, cached 6h)
+- `GET /api/prelive-matches` — Upcoming NS fixtures from 6 main leagues (from DB, 60s cache)
+- `GET /api/top-bets` — Top 3 best betting opportunities of the day (probability ≥ 65%, cached 30min)
+- `GET /api/hot-matches` — Top 5 hottest matches by goal trend + league priority (cached 30min)
 - `GET /api/player-stats?id=&season=` — Player season statistics
 - `GET /api/team-stats?team=&league=&season=` — Team statistics
 - `GET /api/live-odds?fixture=` — Legacy alias for fixture odds
