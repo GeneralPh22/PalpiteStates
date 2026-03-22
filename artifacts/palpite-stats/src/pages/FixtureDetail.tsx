@@ -26,7 +26,7 @@ interface Fixture {
   id: number;
   date: string;
   status: { short: string; long: string; elapsed: number | null };
-  league: { id: number; name: string; country: string; logo: string; round: string };
+  league: { id: number; name: string; country: string; logo: string; flag: string; round: string };
   homeTeam: { id: number; name: string; logo: string; winner: boolean | null };
   awayTeam: { id: number; name: string; logo: string; winner: boolean | null };
   score: { home: number | null; away: number | null };
@@ -351,40 +351,68 @@ function TabOverview({ fixture, analysis, last5Data }: { fixture: Fixture; analy
 }
 
 // ── TAB: Team Stats ────────────────────────────────────────────────────────────
-function TabTeamStats({ fixture, stats }: { fixture: Fixture; stats: any }) {
-  if (!stats?.stats) {
+function SeasonStatRow({
+  label,
+  homeVal,
+  awayVal,
+  inverted = false,
+  format: fmt = (v: number) => String(v),
+}: {
+  label: string;
+  homeVal: number | null;
+  awayVal: number | null;
+  inverted?: boolean;
+  format?: (v: number) => string;
+}) {
+  const hv = homeVal ?? 0;
+  const av = awayVal ?? 0;
+  const total = hv + av;
+  const hPct = total > 0 ? (hv / total) * 100 : 50;
+  const aPct = 100 - hPct;
+  const homeBetter = inverted ? hv < av : hv > av;
+  const awayBetter = inverted ? av < hv : av > hv;
+  const noData = homeVal == null && awayVal == null;
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-between items-center text-xs">
+        <span className={cn("font-bold tabular-nums", homeBetter ? "text-primary" : "text-zinc-300")}>
+          {homeVal != null ? fmt(homeVal) : "—"}
+        </span>
+        <span className="text-[10px] text-zinc-600 uppercase tracking-wide font-semibold">{label}</span>
+        <span className={cn("font-bold tabular-nums", awayBetter ? "text-primary" : "text-zinc-300")}>
+          {awayVal != null ? fmt(awayVal) : "—"}
+        </span>
+      </div>
+      <div className="flex h-1 rounded-full overflow-hidden gap-0.5">
+        {noData ? (
+          <div className="flex-1 bg-white/[0.06] rounded-full" />
+        ) : (
+          <>
+            <div className={cn("rounded-l-full transition-all", homeBetter ? "bg-primary" : "bg-white/20")} style={{ width: `${hPct}%` }} />
+            <div className={cn("rounded-r-full transition-all", awayBetter ? "bg-primary" : "bg-white/20")} style={{ width: `${aPct}%` }} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TabTeamStats({ fixture, stats, teamStatsData }: { fixture: Fixture; stats: any; teamStatsData: any }) {
+  // ── Season stats panel (primary) ─────────────────────────────────────────
+  const hS = teamStatsData?.home?.stats ?? null;
+  const aS = teamStatsData?.away?.stats ?? null;
+  const hasSeasonStats = !!(hS || aS);
+  const isLoading = !teamStatsData && !stats;
+
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center py-16 text-zinc-600 gap-2">
         <Loader2 className="w-5 h-5 animate-spin" />
-        Loading statistics...
+        <span className="text-sm">Carregando estatísticas...</span>
       </div>
     );
   }
-
-  const [homeTeamStats, awayTeamStats] = stats.stats;
-  const getVal = (teamStats: any, type: string): number => {
-    const s = (teamStats?.statistics ?? []).find((s: any) => s.type === type);
-    if (!s) return 0;
-    const v = s.value;
-    if (typeof v === "string" && v.includes("%")) return parseInt(v);
-    return typeof v === "number" ? v : parseInt(v ?? "0") || 0;
-  };
-  const getStr = (teamStats: any, type: string): string => {
-    const s = (teamStats?.statistics ?? []).find((s: any) => s.type === type);
-    return s?.value != null ? String(s.value) : "0";
-  };
-
-  const rows = [
-    { label: "Shots on Target", key: "Shots on Goal", inverted: false },
-    { label: "Total Shots", key: "Total Shots", inverted: false },
-    { label: "Ball Possession", key: "Ball Possession", inverted: false },
-    { label: "Corner Kicks", key: "Corner Kicks", inverted: false },
-    { label: "Fouls", key: "Fouls", inverted: true },
-    { label: "Yellow Cards", key: "Yellow Cards", inverted: true },
-    { label: "Red Cards", key: "Red Cards", inverted: true },
-    { label: "Goalkeeper Saves", key: "Goalkeeper Saves", inverted: false },
-    { label: "Expected Goals", key: "expected_goals", inverted: false },
-  ];
 
   return (
     <div className="space-y-5">
@@ -392,28 +420,117 @@ function TabTeamStats({ fixture, stats }: { fixture: Fixture; stats: any }) {
       <div className="flex justify-between items-center px-1">
         <div className="flex items-center gap-2">
           {fixture.homeTeam.logo && <img src={fixture.homeTeam.logo} className="w-7 h-7 object-contain" loading="lazy" alt="" />}
-          <span className="text-sm font-bold text-white">{fixture.homeTeam.name}</span>
+          <span className="text-sm font-bold text-white truncate max-w-[130px]">{fixture.homeTeam.name}</span>
         </div>
+        <span className="text-[10px] text-zinc-600 font-semibold uppercase tracking-wider">2025 Season</span>
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-white">{fixture.awayTeam.name}</span>
+          <span className="text-sm font-bold text-white truncate max-w-[130px] text-right">{fixture.awayTeam.name}</span>
           {fixture.awayTeam.logo && <img src={fixture.awayTeam.logo} className="w-7 h-7 object-contain" loading="lazy" alt="" />}
         </div>
       </div>
 
-      <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-5 space-y-4">
-        {rows.map(({ label, key, inverted }) => (
-          <StatBar
-            key={key}
-            label={label}
-            home={getVal(homeTeamStats, key)}
-            away={getVal(awayTeamStats, key)}
-            homeLabel={getStr(homeTeamStats, key)}
-            awayLabel={getStr(awayTeamStats, key)}
-            inverted={inverted}
-          />
-        ))}
-      </div>
+      {/* ── Season stats ─────────────────────────────────────────────────── */}
+      {hasSeasonStats ? (
+        <>
+          {/* W/D/L record */}
+          {(hS?.played || aS?.played) && (
+            <div className="grid grid-cols-2 gap-3">
+              {[{ t: fixture.homeTeam, s: hS }, { t: fixture.awayTeam, s: aS }].map(({ t, s }) => (
+                <div key={t.id} className="bg-[#09090b] border border-white/[0.07] rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-zinc-600 uppercase tracking-wide mb-1.5">{s?.played ?? "—"} jogos</div>
+                  <div className="flex justify-center gap-3 text-sm font-bold">
+                    <span className="text-primary">{s?.wins ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">V</span></span>
+                    <span className="text-zinc-400">{s?.draws ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">E</span></span>
+                    <span className="text-red-400">{s?.losses ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">D</span></span>
+                  </div>
+                  {s?.form && (
+                    <div className="flex justify-center gap-0.5 mt-2">
+                      {s.form.slice(-5).split("").map((r: string, i: number) => (
+                        <span key={i} className={cn("w-4 h-4 rounded-sm text-[8px] font-black flex items-center justify-center",
+                          r === "W" ? "bg-primary/20 text-primary" : r === "D" ? "bg-zinc-700/60 text-zinc-400" : "bg-red-900/40 text-red-400"
+                        )}>{r}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
+          <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-5 space-y-4">
+            <SeasonStatRow label="Gols Marcados" homeVal={hS?.goalsScored ?? null} awayVal={aS?.goalsScored ?? null} />
+            <SeasonStatRow label="Gols Sofridos" homeVal={hS?.goalsConceded ?? null} awayVal={aS?.goalsConceded ?? null} inverted />
+            <SeasonStatRow label="Méd. Gols (favor)" homeVal={hS?.avgGoalsScored ? parseFloat(hS.avgGoalsScored) : null} awayVal={aS?.avgGoalsScored ? parseFloat(aS.avgGoalsScored) : null} format={(v) => v.toFixed(2)} />
+            <SeasonStatRow label="Méd. Gols (contra)" homeVal={hS?.avgGoalsConceded ? parseFloat(hS.avgGoalsConceded) : null} awayVal={aS?.avgGoalsConceded ? parseFloat(aS.avgGoalsConceded) : null} inverted format={(v) => v.toFixed(2)} />
+            {(hS?.shotsTotal != null || aS?.shotsTotal != null) && (
+              <SeasonStatRow label="Chutes Totais" homeVal={hS?.shotsTotal ?? null} awayVal={aS?.shotsTotal ?? null} />
+            )}
+            {(hS?.shotsOnTarget != null || aS?.shotsOnTarget != null) && (
+              <SeasonStatRow label="Chutes no Gol" homeVal={hS?.shotsOnTarget ?? null} awayVal={aS?.shotsOnTarget ?? null} />
+            )}
+            {(hS?.foulsTotal != null || aS?.foulsTotal != null) && (
+              <SeasonStatRow label="Faltas" homeVal={hS?.foulsTotal ?? null} awayVal={aS?.foulsTotal ?? null} inverted />
+            )}
+            {(hS?.yellowCards != null || aS?.yellowCards != null) && (
+              <SeasonStatRow label="Cartões Amarelos" homeVal={hS?.yellowCards ?? null} awayVal={aS?.yellowCards ?? null} inverted />
+            )}
+            <SeasonStatRow label="Clean Sheets" homeVal={hS?.cleanSheets ?? null} awayVal={aS?.cleanSheets ?? null} />
+            <SeasonStatRow label="Sem Marcar" homeVal={hS?.failedToScore ?? null} awayVal={aS?.failedToScore ?? null} inverted />
+          </div>
+
+          {/* source badge */}
+          {(hS?.source === "last5" || aS?.source === "last5") && (
+            <p className="text-[10px] text-zinc-700 text-center">
+              * Estatísticas baseadas nos últimos 5 jogos
+            </p>
+          )}
+        </>
+      ) : (
+        /* ── Match-specific stats fallback ─────────────────────────────── */
+        stats?.stats?.length > 0 ? (
+          (() => {
+            const [homeTeamStats, awayTeamStats] = stats.stats;
+            const getVal = (ts: any, type: string): number => {
+              const s = (ts?.statistics ?? []).find((s: any) => s.type === type);
+              if (!s) return 0;
+              const v = s.value;
+              if (typeof v === "string" && v.includes("%")) return parseInt(v);
+              return typeof v === "number" ? v : parseInt(v ?? "0") || 0;
+            };
+            const getStr = (ts: any, type: string): string => {
+              const s = (ts?.statistics ?? []).find((s: any) => s.type === type);
+              return s?.value != null ? String(s.value) : "0";
+            };
+            const rows = [
+              { label: "Chutes no Gol", key: "Shots on Goal", inverted: false },
+              { label: "Chutes Totais", key: "Total Shots", inverted: false },
+              { label: "Posse de Bola", key: "Ball Possession", inverted: false },
+              { label: "Escanteios", key: "Corner Kicks", inverted: false },
+              { label: "Faltas", key: "Fouls", inverted: true },
+              { label: "Cartões Amarelos", key: "Yellow Cards", inverted: true },
+              { label: "Defesas do Goleiro", key: "Goalkeeper Saves", inverted: false },
+            ];
+            return (
+              <div className="space-y-4">
+                <p className="text-[10px] text-zinc-600 text-center">Estatísticas do jogo em tempo real</p>
+                <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-5 space-y-4">
+                  {rows.map(({ label, key, inverted }) => (
+                    <StatBar key={key} label={label} home={getVal(homeTeamStats, key)} away={getVal(awayTeamStats, key)} homeLabel={getStr(homeTeamStats, key)} awayLabel={getStr(awayTeamStats, key)} inverted={inverted} />
+                  ))}
+                </div>
+              </div>
+            );
+          })()
+        ) : (
+          <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
+            <div className="w-12 h-12 rounded-full bg-white/[0.04] flex items-center justify-center">
+              <Target className="w-5 h-5 text-zinc-600" />
+            </div>
+            <p className="text-sm text-zinc-500 font-medium">Estatísticas indisponíveis no momento</p>
+            <p className="text-xs text-zinc-700">As estatísticas serão exibidas quando disponíveis</p>
+          </div>
+        )
+      )}
     </div>
   );
 }
@@ -1441,6 +1558,21 @@ export default function FixtureDetail() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const { data: teamStatsData } = useQuery({
+    queryKey: ["fixture-team-stats", id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}/team-stats`);
+        if (!res.ok) return { available: false };
+        return res.json();
+      } catch {
+        return { available: false };
+      }
+    },
+    enabled: activeTab === "stats" && !!fixture,
+    staleTime: 10 * 60 * 1000,
+  });
+
   const { data: h2hData } = useQuery({
     queryKey: ["fixture-h2h", id],
     queryFn: async () => {
@@ -1695,7 +1827,7 @@ export default function FixtureDetail() {
           {(() => {
             switch (activeTab) {
               case "overview": return <TabOverview fixture={fixture} analysis={analysis} last5Data={last5Data} />;
-              case "stats":    return <TabTeamStats fixture={fixture} stats={statsData} />;
+              case "stats":    return <TabTeamStats fixture={fixture} stats={statsData} teamStatsData={teamStatsData} />;
               case "h2h":      return <TabH2H h2h={h2hData} fixture={fixture} />;
               case "players":  return <TabPlayers data={playersData} />;
               case "odds":     return <TabOdds oddsData={oddsData} fixture={fixture} analysis={analysis} />;

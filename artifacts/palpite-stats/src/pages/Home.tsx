@@ -29,7 +29,7 @@ interface LiveMatch {
   id: number;
   date: string;
   status: { short: string; long: string; elapsed: number | null };
-  league: { id: number; name: string; country: string; logo: string; round: string };
+  league: { id: number; name: string; country: string; logo: string; flag: string; round: string };
   homeTeam: { id: number; name: string; logo: string; winner: boolean | null };
   awayTeam: { id: number; name: string; logo: string; winner: boolean | null };
   score: { home: number | null; away: number | null };
@@ -264,9 +264,11 @@ function LeagueSection({ group, startIdx }: { group: LeagueGroup; startIdx: numb
         <span className="text-[11.5px] font-bold text-zinc-200 uppercase tracking-wide flex-1 text-left">
           {group.league.name}
         </span>
-        {group.league.country && (
+        {group.league.flag ? (
+          <img src={group.league.flag} alt={group.league.country} loading="lazy" className="w-4 h-3 object-cover rounded-[2px] opacity-70 hidden sm:block flex-shrink-0" />
+        ) : group.league.country ? (
           <span className="text-[10px] text-zinc-600 font-medium hidden sm:block">{group.league.country}</span>
-        )}
+        ) : null}
         <span className="text-[11px] font-bold text-zinc-500 tabular-nums ml-1">
           ({group.matches.length})
         </span>

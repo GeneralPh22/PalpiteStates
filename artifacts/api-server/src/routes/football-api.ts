@@ -10,6 +10,17 @@ const router: IRouter = Router();
 
 const API_BASE = "https://v3.football.api-sports.io";
 
+const TOP_LEAGUES = [
+  39,   // Premier League
+  140,  // La Liga
+  78,   // Bundesliga
+  61,   // Ligue 1
+  135,  // Serie A
+  71,   // Brasileirão
+  2,    // Champions League
+  3,    // Europa League
+];
+
 const cache = new Map<string, { data: unknown; ts: number }>();
 const ODDS_TTL = 5 * 60 * 1000;       // 5 minutes
 const STATS_TTL = 10 * 60 * 1000;     // 10 minutes
@@ -240,6 +251,7 @@ function mapFixture(item: any) {
       name:    league.name    ?? "Unknown League",
       country: league.country ?? "",
       logo:    league.logo    ?? "",
+      flag:    league.flag    ?? "",
       round:   league.round   ?? "",
     },
     homeTeam: {
@@ -275,11 +287,28 @@ async function fetchAndCacheFixtures(): Promise<number> {
   const today = new Date().toISOString().split("T")[0];
   let saved = 0;
 
-  // Try today's date first
+  // Try today's date first — returns ALL leagues at once (most efficient)
   const { data: todayData, ok: todayOk } = await apiFetch(`/fixtures?date=${today}`, FIXTURE_LIST_TTL);
   if (todayOk && todayData && (todayData.results ?? 0) > 0) {
     await saveFixturesToDB(todayData.response ?? []);
     saved += todayData.results ?? 0;
+  }
+
+  // If date fetch returned nothing, try top leagues individually by season to supplement
+  // Only run if API is not suspended (quota protection)
+  const SEASON = "2025";
+  if (!apiSuspended && saved === 0) {
+    for (const leagueId of TOP_LEAGUES) {
+      if (apiSuspended) break;
+      const { data: lgData, ok: lgOk } = await apiFetch(
+        `/fixtures?league=${leagueId}&season=${SEASON}&date=${today}`,
+        FIXTURE_LIST_TTL
+      );
+      if (lgOk && lgData && (lgData.results ?? 0) > 0) {
+        await saveFixturesToDB(lgData.response ?? []);
+        saved += lgData.results ?? 0;
+      }
+    }
   }
 
   // Try ?next=20 (works on paid plans — plan error is handled gracefully)
@@ -501,6 +530,140 @@ router.get("/fixture/:id/stats", async (req, res) => {
   }
 });
 
+// ── fixture/:id/team-stats ─────────────────────────────────────────────────────
+// Returns season statistics for both teams, with fallback to last-5 averages.
+router.get("/fixture/:id/team-stats", async (req, res) => {
+  try {
+    const fixtureId = Number(req.params.id);
+
+    const { data: fixData, ok: fixOk } = await apiFetch(`/fixtures?id=${fixtureId}`, MATCH_TTL);
+    if (!fixOk || !fixData?.response?.[0]) {
+      return res.json({ available: false, reason: "fixture_not_found" });
+    }
+
+    const item = fixData.response[0];
+    const homeId   = item.teams.home.id;
+    const awayId   = item.teams.away.id;
+    const leagueId = item.league.id;
+    const homeName = item.teams.home.name ?? "Home";
+    const awayName = item.teams.away.name ?? "Away";
+
+    // Helper: build a TeamStats object from /teams/statistics response
+    const buildFromSeasonStats = (s: any) => {
+      if (!s) return null;
+      const played = s.fixtures?.played?.total ?? 0;
+      if (played === 0) return null;
+      return {
+        played,
+        wins:           s.fixtures?.wins?.total   ?? 0,
+        draws:          s.fixtures?.draws?.total  ?? 0,
+        losses:         s.fixtures?.loses?.total  ?? 0,
+        goalsScored:    s.goals?.for?.total?.total       ?? 0,
+        goalsConceded:  s.goals?.against?.total?.total   ?? 0,
+        avgGoalsScored:   s.goals?.for?.average?.total    ?? null,
+        avgGoalsConceded: s.goals?.against?.average?.total ?? null,
+        shotsTotal:     s.shots?.total ?? null,
+        shotsOnTarget:  s.shots?.on    ?? null,
+        cornersTotal:   null, // not available in season stats endpoint
+        foulsTotal:     s.fouls?.committed ?? null,
+        yellowCards:    s.cards?.yellow?.total ?? null,
+        redCards:       s.cards?.red?.total    ?? null,
+        cleanSheets:    s.clean_sheet?.total   ?? 0,
+        failedToScore:  s.failed_to_score?.total ?? 0,
+        form:           s.form ?? null,
+        source:         "season",
+      };
+    };
+
+    // Helper: build stats from last-5 fixtures (fallback) for a specific team
+    const buildFromLast5 = (fixtures: any[], teamId: number) => {
+      if (!fixtures || fixtures.length === 0) return null;
+      let goalsScored = 0, goalsConceded = 0, wins = 0, draws = 0, losses = 0;
+      let cleanSheets = 0, failedToScore = 0;
+      const played = fixtures.length;
+
+      for (const f of fixtures) {
+        const goals  = f.goals ?? {};
+        const isHome = f.teams?.home?.id === teamId;
+        const gs = isHome ? (goals.home ?? 0) : (goals.away  ?? 0);
+        const gc = isHome ? (goals.away  ?? 0) : (goals.home ?? 0);
+        goalsScored   += gs;
+        goalsConceded += gc;
+        if (gc === 0) cleanSheets++;
+        if (gs === 0) failedToScore++;
+        if (gs > gc) wins++;
+        else if (gs < gc) losses++;
+        else draws++;
+      }
+
+      return {
+        played,
+        wins,
+        draws,
+        losses,
+        goalsScored,
+        goalsConceded,
+        avgGoalsScored:   played > 0 ? (goalsScored   / played).toFixed(2) : null,
+        avgGoalsConceded: played > 0 ? (goalsConceded / played).toFixed(2) : null,
+        shotsTotal:      shots     > 0 ? shots     : null,
+        shotsOnTarget:   shotsOnTarget > 0 ? shotsOnTarget : null,
+        cornersTotal:    corners   > 0 ? corners   : null,
+        foulsTotal:      fouls     > 0 ? fouls     : null,
+        yellowCards:     yellowCards > 0 ? yellowCards : null,
+        redCards:        redCards  > 0 ? redCards  : null,
+        cleanSheets,
+        failedToScore,
+        form: null,
+        source: "last5",
+      };
+    };
+
+    // Fetch season stats for both teams in parallel
+    const [{ data: homeSeasonData, ok: homeSeasonOk }, { data: awaySeasonData, ok: awaySeasonOk }] = await Promise.all([
+      apiFetch(`/teams/statistics?team=${homeId}&league=${leagueId}&season=2025`, STATS_TTL),
+      apiFetch(`/teams/statistics?team=${awayId}&league=${leagueId}&season=2025`, STATS_TTL),
+    ]);
+
+    let homeStats = buildFromSeasonStats(homeSeasonOk ? homeSeasonData?.response : null);
+    let awayStats = buildFromSeasonStats(awaySeasonOk ? awaySeasonData?.response : null);
+
+    // Retry once for any team with empty stats (could be temporary API hiccup)
+    if (!homeStats) {
+      const { data: retry, ok: retryOk } = await apiFetch(
+        `/teams/statistics?team=${homeId}&league=${leagueId}&season=2025`,
+        1000 // force fresh fetch (tiny TTL)
+      );
+      homeStats = buildFromSeasonStats(retryOk ? retry?.response : null);
+    }
+    if (!awayStats) {
+      const { data: retry, ok: retryOk } = await apiFetch(
+        `/teams/statistics?team=${awayId}&league=${leagueId}&season=2025`,
+        1000
+      );
+      awayStats = buildFromSeasonStats(retryOk ? retry?.response : null);
+    }
+
+    // Fallback to last-5 fixtures if season stats still empty
+    if (!homeStats) {
+      const { data: f5, ok: f5Ok } = await apiFetch(`/fixtures?team=${homeId}&last=5`, STATS_TTL);
+      homeStats = buildFromLast5(f5Ok ? (f5?.response ?? []) : [], homeId);
+    }
+    if (!awayStats) {
+      const { data: f5, ok: f5Ok } = await apiFetch(`/fixtures?team=${awayId}&last=5`, STATS_TTL);
+      awayStats = buildFromLast5(f5Ok ? (f5?.response ?? []) : [], awayId);
+    }
+
+    return res.json({
+      available: !!(homeStats || awayStats),
+      home: { name: homeName, stats: homeStats },
+      away: { name: awayName, stats: awayStats },
+    });
+  } catch (err: any) {
+    console.error("[fixture/team-stats]", err.message);
+    return res.json({ available: false, reason: "error" });
+  }
+});
+
 // ── fixture/:id/h2h ────────────────────────────────────────────────────────────
 router.get("/fixture/:id/h2h", async (req, res) => {
   try {
@@ -516,8 +679,8 @@ router.get("/fixture/:id/h2h", async (req, res) => {
     const awayId = item.teams.away.id;
 
     const { data, ok } = await apiFetch(
-      `/fixtures/headtohead?h2h=${homeId}-${awayId}&last=10`,
-      STATS_TTL
+      `/fixtures/headtohead?h2h=${homeId}-${awayId}&last=3`,
+      6 * 60 * 60 * 1000
     );
 
     if (ok && data?.response?.length > 0) {
@@ -603,8 +766,8 @@ router.get("/fixture/:id/analysis", async (req, res) => {
     const leagueId = item.league.id;
 
     const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
-      apiFetch(`/teams/statistics?team=${homeTeamId}&league=${leagueId}&season=2024`, STATS_TTL),
-      apiFetch(`/teams/statistics?team=${awayTeamId}&league=${leagueId}&season=2024`, STATS_TTL),
+      apiFetch(`/teams/statistics?team=${homeTeamId}&league=${leagueId}&season=2025`, STATS_TTL),
+      apiFetch(`/teams/statistics?team=${awayTeamId}&league=${leagueId}&season=2025`, STATS_TTL),
     ]);
 
     const avgGoals = (s: any, type: "for" | "against"): number => {

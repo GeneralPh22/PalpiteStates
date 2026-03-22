@@ -114,8 +114,10 @@ All endpoints automatically fall back to rich demo data when API-Football is una
 - `GET /api/fixture/:id` — Fixture details (supports demo IDs 99001–99012)
 - `GET /api/fixture/:id/analysis` — AI probability analysis (Poisson model)
 - `GET /api/fixture/:id/odds` — Bookmaker odds (Bet365, Betano)
-- `GET /api/fixture/:id/stats` — Team match statistics
-- `GET /api/fixture/:id/h2h` — Head-to-head history
+- `GET /api/fixture/:id/stats` — Team match statistics (in-match, real-time)
+- `GET /api/fixture/:id/team-stats` — Season statistics for both teams (season=2025, fallback to last-5)
+- `GET /api/fixture/:id/last5` — Last 5 matches for each team
+- `GET /api/fixture/:id/h2h` — Head-to-head history (last 3, cached 6h)
 - `GET /api/player-stats?id=&season=` — Player season statistics
 - `GET /api/team-stats?team=&league=&season=` — Team statistics
 - `GET /api/live-odds?fixture=` — Legacy alias for fixture odds
