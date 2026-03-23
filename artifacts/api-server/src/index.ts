@@ -1,19 +1,22 @@
 import app from "./app";
 
 const rawPort = process.env["PORT"];
-
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
-
-const port = Number(rawPort);
+const port = rawPort ? Number(rawPort) : 3000;
 
 if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
+  console.error(`[server] Invalid PORT value: "${rawPort}" — defaulting to 3000`);
 }
 
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+const effectivePort = Number.isNaN(port) || port <= 0 ? 3000 : port;
+
+process.on("uncaughtException", (err) => {
+  console.error("[server] Uncaught exception:", err.message, err.stack);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] Unhandled rejection:", reason);
+});
+
+app.listen(effectivePort, "0.0.0.0", () => {
+  console.log(`Server listening on port ${effectivePort}`);
 });

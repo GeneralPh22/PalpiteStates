@@ -860,8 +860,12 @@ export default function Home() {
             ))}
           </div>
         ) : liveIsError && allMatches.length === 0 ? (
-          <div className="p-8 text-center bg-[#09090b] rounded-xl border border-destructive/20 text-destructive">
-            Failed to load match data. Please try again.
+          <div className="p-10 text-center bg-[#09090b] rounded-xl border border-white/[0.07] flex flex-col items-center gap-3">
+            <Loader2 className="w-9 h-9 text-primary animate-spin" />
+            <h3 className="text-lg font-semibold text-white">Conectando ao servidor...</h3>
+            <p className="text-sm text-muted-foreground max-w-xs">
+              O servidor está iniciando. A página será atualizada automaticamente em alguns segundos.
+            </p>
           </div>
         ) : totalFiltered === 0 ? (
           <div className="p-12 text-center bg-[#09090b] rounded-xl border border-white/[0.06] flex flex-col items-center">

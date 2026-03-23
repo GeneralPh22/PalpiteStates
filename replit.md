@@ -178,7 +178,21 @@ Implemented in `src/lib/leaguePriority.ts`.
 - `lib/*` packages are composite and emit declarations via `tsc --build`
 - `artifacts/*` are leaf packages checked with `tsc --noEmit`
 
+## Production Deployment
+
+- **Deployment target**: `autoscale` (configured in `.replit`)
+- **Build**: `bash scripts/build-prod.sh` — builds frontend (BASE_PATH=/) + API server bundle
+  - Frontend output: `artifacts/palpite-stats/dist/public/`
+  - Server output: `artifacts/api-server/dist/index.cjs`
+- **Run**: `PORT=<assigned> node artifacts/api-server/dist/index.cjs`
+- **Serves**: Express serves API at `/api/*` + React SPA static files at all other routes
+- **Health check**: `GET /health` → `{ status: "ok", timestamp: "..." }`
+- **Crash protection**: `uncaughtException` + `unhandledRejection` handlers prevent server exit on unexpected errors
+- **Custom domain**: `www.palpitestats.com.br` — configure in Replit deployment settings after publishing
+- **Port**: Defaults to 3000 if `PORT` env var is not set; Replit always provides `PORT` in production
+
 ## Key Commands
 
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API client/zod from openapi.yaml
 - `pnpm --filter @workspace/db run push` — push schema changes to DB
+- `bash scripts/build-prod.sh` — production build (frontend + API)
