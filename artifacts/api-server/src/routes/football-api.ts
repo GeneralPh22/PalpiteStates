@@ -482,6 +482,8 @@ interface HotMatch {
   league: { id: number; name: string; country: string; logo: string };
   date: string;
   avgGoals: number | null;
+  bttsPct: number | null;
+  over25Pct: number | null;
   reason: string;
   hotScore: number;
 }
@@ -585,10 +587,13 @@ async function warmupFeaturedCache(): Promise<void> {
       const goalTrendScore = avgGoals != null ? Math.min(avgGoals / 4.0, 1.0) * 3.0 : 0;
       const hotScore = parseFloat((leaguePriorityScore + goalTrendScore).toFixed(2));
 
+      const bttsPct = hasStats ? Math.round(Math.min(90, Math.max(5, probs.btts * 100))) : null;
+      const over25Pct = hasStats ? Math.round(Math.min(90, Math.max(5, probs.over25 * 100))) : null;
+
       hots.push({
         fixtureId: f.id, homeTeam: homeName, awayTeam: awayName,
         homeLogo: f.homeTeam.logo, awayLogo: f.awayTeam.logo,
-        league: leagueInfo, date: f.date, avgGoals, hotScore,
+        league: leagueInfo, date: f.date, avgGoals, bttsPct, over25Pct, hotScore,
         reason: avgGoals !== null
           ? `Média de ${avgGoals.toFixed(1)} gols/jogo · ${leagueInfo.name}`
           : `Jogo de alto interesse · ${leagueInfo.name}`,

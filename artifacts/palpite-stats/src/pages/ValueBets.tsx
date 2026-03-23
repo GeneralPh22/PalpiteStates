@@ -165,8 +165,15 @@ export default function ValueBets() {
               transition={{ delay: idx * 0.05 }}
             >
               <Link href={`/fixture/${bet.fixtureId}`}>
-                <div className="bg-[#09090b] border border-orange-500/15 hover:border-orange-500/30 rounded-2xl p-5 transition-all cursor-pointer group">
-                  <div className="flex items-start justify-between gap-4 mb-4">
+                <div className="bg-[#09090b] border border-amber-500/20 hover:border-amber-500/35 rounded-2xl p-5 transition-all cursor-pointer group relative overflow-hidden">
+                  {/* VALUE BET badge */}
+                  <div className="absolute top-0 right-0">
+                    <div className="bg-amber-400/90 text-black text-[9px] font-black px-3 py-1 rounded-bl-xl uppercase tracking-widest flex items-center gap-1">
+                      ⚡ Value Bet
+                    </div>
+                  </div>
+
+                  <div className="flex items-start justify-between gap-4 mb-4 pr-20">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         {bet.leagueLogo && (
@@ -179,47 +186,47 @@ export default function ValueBets() {
                         <span className="text-[10px] text-zinc-600">{format(new Date(bet.date), "HH:mm")}</span>
                       </div>
                       <div className="text-sm font-bold text-white">{bet.match}</div>
-                      <div className="text-xs text-orange-400 font-semibold mt-0.5">
-                        🔥 {bet.selection}
+                      <div className="text-xs text-amber-300 font-semibold mt-0.5">
+                        {bet.selection}
                         <span className="text-zinc-600 font-normal ml-1">· {bet.market}</span>
                       </div>
                     </div>
-                    <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                      <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full border", confStyle[bet.confidence])}>
-                        {bet.confidence}
-                      </span>
-                      <span className="text-xs text-emerald-400 font-bold">+{bet.expectedValue}% EV</span>
+                  </div>
+
+                  {/* Main stats grid */}
+                  <div className="grid grid-cols-3 gap-3 text-center mb-3">
+                    <div className="bg-amber-500/[0.07] rounded-xl py-2.5 border border-amber-500/20">
+                      <div className="text-[9px] text-amber-600 uppercase font-bold mb-1">Odd Bookmaker</div>
+                      <div className="text-2xl font-display font-black text-amber-300">{bet.bookmakerOdds.toFixed(2)}</div>
+                    </div>
+                    <div className="bg-white/[0.03] rounded-xl py-2.5 border border-white/[0.05]">
+                      <div className="text-[9px] text-zinc-600 uppercase font-semibold mb-1">Odd Justa (AI)</div>
+                      <div className="text-2xl font-display font-black text-zinc-300">{bet.fairOdds}</div>
+                    </div>
+                    <div className="bg-primary/[0.07] rounded-xl py-2.5 border border-primary/20">
+                      <div className="text-[9px] text-primary/70 uppercase font-bold mb-1">Prob AI</div>
+                      <div className="text-2xl font-display font-black text-primary">{Math.round(bet.aiProbability * 100)}%</div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-3 text-center">
-                    <div className="bg-white/[0.03] rounded-xl py-2.5 border border-white/[0.05]">
-                      <div className="text-[9px] text-zinc-600 uppercase font-semibold mb-1">Bookmaker</div>
-                      <div className="text-lg font-display font-black text-orange-400">{bet.bookmakerOdds.toFixed(2)}</div>
-                      <div className="text-[9px] text-zinc-700 truncate">{bet.bookmakers[0]}</div>
+                  {/* EV bar */}
+                  <div className="rounded-xl bg-emerald-500/[0.07] border border-emerald-500/20 px-3 py-2.5 flex items-center justify-between">
+                    <div>
+                      <div className="text-[9px] text-zinc-600 uppercase tracking-wider font-semibold">Valor Esperado (EV)</div>
+                      <div className="text-[11px] text-zinc-500 mt-0.5">Prob real superior à implícita nos odds</div>
                     </div>
-                    <div className="bg-white/[0.03] rounded-xl py-2.5 border border-white/[0.05]">
-                      <div className="text-[9px] text-zinc-600 uppercase font-semibold mb-1">Fair Odds</div>
-                      <div className="text-lg font-display font-black text-zinc-300">{bet.fairOdds}</div>
-                      <div className="text-[9px] text-zinc-700">AI estimate</div>
-                    </div>
-                    <div className="bg-white/[0.03] rounded-xl py-2.5 border border-white/[0.05]">
-                      <div className="text-[9px] text-zinc-600 uppercase font-semibold mb-1">AI Prob</div>
-                      <div className="text-lg font-display font-black text-primary">{Math.round(bet.aiProbability * 100)}%</div>
-                      <div className="text-[9px] text-zinc-700">model</div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="text-xl font-black text-emerald-400">+{bet.expectedValue}%</div>
+                      <div className="text-[9px] text-emerald-600 font-semibold">POSITIVO</div>
                     </div>
                   </div>
 
                   <div className="mt-3 flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      {bet.bookmakers.slice(0, 3).map(bm => (
-                        <span key={bm} className="text-[9px] px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-500 border border-white/[0.06]">
-                          {bm}
-                        </span>
-                      ))}
-                    </div>
+                    <span className={cn("text-[10px] font-bold px-2.5 py-0.5 rounded-full border", confStyle[bet.confidence])}>
+                      {bet.confidence === "High" ? "Alta confiança" : bet.confidence === "Medium" ? "Confiança média" : "Baixa confiança"}
+                    </span>
                     <span className="text-[9px] text-zinc-700 group-hover:text-zinc-500 transition-colors flex items-center gap-1">
-                      Full analysis <ExternalLink className="w-2.5 h-2.5" />
+                      Ver análise completa <ExternalLink className="w-2.5 h-2.5" />
                     </span>
                   </div>
                 </div>

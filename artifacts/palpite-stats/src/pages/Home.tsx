@@ -150,6 +150,8 @@ interface HotMatchItem {
   league: { id: number; name: string; country: string; logo: string };
   date: string;
   avgGoals: number | null;
+  bttsPct: number | null;
+  over25Pct: number | null;
   reason: string;
   hotScore: number;
 }
@@ -391,16 +393,30 @@ function HotMatchesSection() {
                 )}
               </div>
 
-              {/* Hot score + avg goals */}
-              <div className="flex items-center gap-3 flex-shrink-0">
-                <div className="flex flex-col items-end gap-0.5">
+              {/* Stats + nav */}
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex flex-col items-end gap-1.5">
                   <HotScoreFlames score={m.hotScore} />
-                  {m.avgGoals !== null && (
-                    <div className="text-right">
-                      <div className="text-[8px] text-zinc-700 uppercase tracking-wider">xG média</div>
-                      <div className="text-xs font-bold text-amber-400 tabular-nums">{m.avgGoals.toFixed(1)}</div>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {m.avgGoals !== null && (
+                      <div className="text-center">
+                        <div className="text-[7px] text-zinc-700 uppercase tracking-wider">xG</div>
+                        <div className="text-[11px] font-black text-amber-400 tabular-nums">{m.avgGoals.toFixed(1)}</div>
+                      </div>
+                    )}
+                    {m.bttsPct !== null && (
+                      <div className="text-center border-l border-white/[0.06] pl-2">
+                        <div className="text-[7px] text-zinc-700 uppercase tracking-wider">BTTS</div>
+                        <div className={cn("text-[11px] font-black tabular-nums", (m.bttsPct ?? 0) >= 60 ? "text-emerald-400" : "text-zinc-500")}>{m.bttsPct}%</div>
+                      </div>
+                    )}
+                    {m.over25Pct !== null && (
+                      <div className="text-center border-l border-white/[0.06] pl-2">
+                        <div className="text-[7px] text-zinc-700 uppercase tracking-wider">O2.5</div>
+                        <div className={cn("text-[11px] font-black tabular-nums", (m.over25Pct ?? 0) >= 60 ? "text-blue-400" : "text-zinc-500")}>{m.over25Pct}%</div>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-zinc-800 group-hover:text-zinc-500 transition-colors" />
               </div>
@@ -494,8 +510,10 @@ function GoalProbabilitySection() {
   return (
     <div className="mb-10">
       <div className="flex items-center gap-2 mb-4">
-        <Zap className="w-5 h-5 text-yellow-400" />
-        <h2 className="text-lg font-display font-bold text-white">Maior Probabilidade de Gols</h2>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-500/[0.08] border border-red-500/[0.15]">
+          <Flame className="w-4 h-4 text-red-400" />
+          <span className="text-sm font-black text-red-300 tracking-tight">Goal Radar</span>
+        </div>
         <span className="text-xs text-zinc-600 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.07]">
           Top 5 jogos de hoje
         </span>

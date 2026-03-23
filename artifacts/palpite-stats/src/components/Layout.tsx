@@ -17,6 +17,8 @@ import {
   Calendar,
   BarChart3,
   Trophy,
+  Brain,
+  Calculator,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
@@ -30,9 +32,11 @@ const NAV_ITEMS = [
   { href: "/matches", label: "Today's Matches", icon: Calendar },
   { href: "/analysis", label: "Daily Analysis", icon: BarChart2 },
   { href: "/ai", label: "AI Predictions", icon: Cpu },
+  { href: "/value-bets", label: "Value Bets", icon: Flame },
+  { href: "/ai-performance", label: "Performance AI", icon: Brain },
   { href: "/top-players", label: "Top Players", icon: Users },
   { href: "/rankings", label: "Stats Rankings", icon: BarChart3 },
-  { href: "/value-bets", label: "Value Bets", icon: Flame },
+  { href: "/bet-simulator", label: "Simulador", icon: Calculator },
   { href: "/pricing", label: "Pricing", icon: Crown },
 ];
 

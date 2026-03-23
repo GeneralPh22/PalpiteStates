@@ -4,6 +4,17 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 4)
+
+- **leagues.ts**: Added "Internacional" section at top with UEFA Nations League (5), Euro Championship (4), FIFA World Cup (1), World Cup Quals (31/35), Copa Libertadores (13), Copa Sudamericana (11), UCL (2), UEL (3), Conference League (848)
+- **BetSimulator.tsx**: New page `/bet-simulator` — stake input + odds input → retorno/lucro; quick stake buttons, quick odds buttons, scale table, affiliate CTA
+- **AiPerformance.tsx**: New page `/ai-performance` — tracks predictions in localStorage; green/red outcome marking; win rate progress bar; stats grid; filter tabs
+- **App.tsx**: Added routes for `/bet-simulator` and `/ai-performance`
+- **Layout.tsx**: Added "Performance AI" (Brain icon) and "Simulador" (Calculator icon) nav items; added Brain/Calculator imports
+- **ValueBets.tsx**: Upgraded card with ⚡ VALUE BET corner badge, gold branding, EV positive section with explicit "POSITIVO" label, 3-column stats grid (Odd Bookmaker / Odd Justa / Prob AI)
+- **football-api.ts**: HotMatch interface extended with `bttsPct` and `over25Pct` fields; computed from Poisson probs in warmupFeaturedCache
+- **Home.tsx**: HotMatchItem interface updated with bttsPct/over25Pct; HotMatchesSection cards now show xG + BTTS% + O2.5% columns; GoalProbabilitySection header renamed to "🔥 Goal Radar" with red pill badge
+
 ## Recent Changes (Session 3)
 
 - **Layout.tsx**: Added "Ligas" trophy-icon toggle button next to logo; fixed header div structure
