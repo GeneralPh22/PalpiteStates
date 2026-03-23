@@ -243,6 +243,7 @@ function mapFixture(item: any) {
   const away     = teams.away      ?? {};
   const status   = fixture.status  ?? {};
 
+  const venue = fixture.venue ?? {};
   return {
     id:     fixture.id   ?? null,
     date:   fixture.date ?? null,
@@ -258,6 +259,7 @@ function mapFixture(item: any) {
       logo:    league.logo    ?? "",
       flag:    league.flag    ?? "",
       round:   league.round   ?? "",
+      season:  league.season  ?? null,
     },
     homeTeam: {
       id:     home.id     ?? 0,
@@ -274,6 +276,10 @@ function mapFixture(item: any) {
     score: {
       home: goals.home ?? null,
       away: goals.away ?? null,
+    },
+    venue: {
+      name: venue.name ?? null,
+      city: venue.city ?? null,
     },
   };
 }
@@ -431,7 +437,7 @@ async function fetchTopLeaguePrelive(forceMissing?: number[]): Promise<void> {
       console.log("[prelive-refresh] No upcoming top-league fixtures found (API may be suspended)");
     }
 
-    lastPreliveRefresh = now;
+    lastPreliveRefresh = Date.now();
   } catch (err: any) {
     console.error("[prelive-refresh] Error:", err.message);
   } finally {
@@ -1050,6 +1056,64 @@ router.get("/fixture/:id/h2h", async (req, res) => {
   } catch (err: any) {
     console.error("[fixture/h2h]", err.message);
     return res.json({ h2h: [], available: false });
+  }
+});
+
+// ── fixture/:id/standings ──────────────────────────────────────────────────────
+router.get("/fixture/:id/standings", async (req, res) => {
+  try {
+    const fixtureId = Number(req.params.id);
+    const { data: fixData, ok: fixOk } = await apiFetch(`/fixtures?id=${fixtureId}`, MATCH_TTL);
+    if (!fixOk || !fixData?.response?.[0]) {
+      return res.json({ available: false });
+    }
+
+    const item = fixData.response[0];
+    const leagueId = item.league?.id;
+    const season   = item.league?.season ?? 2024;
+    const homeId   = item.teams?.home?.id;
+    const awayId   = item.teams?.away?.id;
+
+    const { data: sd, ok: sdOk } = await apiFetch(
+      `/standings?league=${leagueId}&season=${season}`,
+      STATS_TTL
+    );
+
+    if (!sdOk || !sd?.response?.[0]) {
+      return res.json({ available: false });
+    }
+
+    const groups: any[][] = sd.response[0]?.league?.standings ?? [];
+    let homeRank: number | null = null;
+    let awayRank: number | null = null;
+    let homePoints: number | null = null;
+    let awayPoints: number | null = null;
+    let homeForm: string | null = null;
+    let awayForm: string | null = null;
+
+    for (const group of groups) {
+      for (const entry of group) {
+        if (entry.team?.id === homeId) {
+          homeRank = entry.rank;
+          homePoints = entry.points;
+          homeForm = entry.form ?? null;
+        }
+        if (entry.team?.id === awayId) {
+          awayRank = entry.rank;
+          awayPoints = entry.points;
+          awayForm = entry.form ?? null;
+        }
+      }
+    }
+
+    return res.json({
+      available: homeRank !== null || awayRank !== null,
+      home: homeRank !== null ? { rank: homeRank, points: homePoints, form: homeForm } : null,
+      away: awayRank !== null ? { rank: awayRank, points: awayPoints, form: awayForm } : null,
+    });
+  } catch (err: any) {
+    console.error("[fixture/standings]", err.message);
+    return res.json({ available: false });
   }
 });
 

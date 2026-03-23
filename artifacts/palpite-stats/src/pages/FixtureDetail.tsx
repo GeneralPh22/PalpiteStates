@@ -17,6 +17,7 @@ import {
   Target,
   Loader2,
   Shield,
+  MapPin,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -26,10 +27,11 @@ interface Fixture {
   id: number;
   date: string;
   status: { short: string; long: string; elapsed: number | null };
-  league: { id: number; name: string; country: string; logo: string; flag: string; round: string };
+  league: { id: number; name: string; country: string; logo: string; flag: string; round: string; season?: number };
   homeTeam: { id: number; name: string; logo: string; winner: boolean | null };
   awayTeam: { id: number; name: string; logo: string; winner: boolean | null };
   score: { home: number | null; away: number | null };
+  venue?: { name?: string; city?: string };
 }
 
 const TABS = [
@@ -1639,6 +1641,22 @@ export default function FixtureDetail() {
     retry: 0,                          // never retry — protect API quota
   });
 
+  const { data: standingsData } = useQuery({
+    queryKey: ["fixture-standings", id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`${BASE}/api/fixture/${id}/standings`);
+        if (!res.ok) return null;
+        return await res.json();
+      } catch {
+        return null;
+      }
+    },
+    enabled: !!fixture,
+    staleTime: 30 * 60 * 1000,
+    retry: 0,
+  });
+
   if (fixtureLoading) {
     return (
       <div className="container mx-auto px-4 py-16 max-w-3xl">
@@ -1788,11 +1806,52 @@ export default function FixtureDetail() {
           </div>
         </div>
 
-        {/* Date */}
-        <div className="text-center mt-4">
+        {/* Date + Venue */}
+        <div className="text-center mt-4 space-y-1.5">
           <span className="text-xs text-zinc-700">
-            {safeDate(fixture.date, "EEEE, dd MMM yyyy")}
+            {safeDate(fixture.date, "EEEE, dd MMM yyyy · HH:mm")}
           </span>
+          {(fixture.venue?.name || fixture.venue?.city) && (
+            <div className="flex items-center justify-center gap-1 text-zinc-600">
+              <MapPin className="w-3 h-3 flex-shrink-0" />
+              <span className="text-[11px]">
+                {[fixture.venue.name, fixture.venue.city].filter(Boolean).join(", ")}
+              </span>
+            </div>
+          )}
+          {standingsData?.home && standingsData?.away && (
+            <div className="flex items-center justify-center gap-4 mt-2 pt-2 border-t border-white/[0.04]">
+              <div className="flex items-center gap-1.5">
+                <span className={cn(
+                  "text-[10px] font-bold px-1.5 py-0.5 rounded",
+                  standingsData.home.rank <= 4 ? "bg-primary/20 text-primary" :
+                  standingsData.home.rank <= 8 ? "bg-amber-500/20 text-amber-400" :
+                  "bg-zinc-700/40 text-zinc-500"
+                )}>
+                  #{standingsData.home.rank}
+                </span>
+                <span className="text-[10px] text-zinc-600">{standingsData.home.points} pts</span>
+                {standingsData.home.form && (
+                  <span className="text-[9px] text-zinc-700 font-mono tracking-tight">{standingsData.home.form.slice(-5)}</span>
+                )}
+              </div>
+              <span className="text-zinc-800 text-xs">·</span>
+              <div className="flex items-center gap-1.5">
+                {standingsData.away.form && (
+                  <span className="text-[9px] text-zinc-700 font-mono tracking-tight">{standingsData.away.form.slice(-5)}</span>
+                )}
+                <span className="text-[10px] text-zinc-600">{standingsData.away.points} pts</span>
+                <span className={cn(
+                  "text-[10px] font-bold px-1.5 py-0.5 rounded",
+                  standingsData.away.rank <= 4 ? "bg-blue-500/20 text-blue-400" :
+                  standingsData.away.rank <= 8 ? "bg-amber-500/20 text-amber-400" :
+                  "bg-zinc-700/40 text-zinc-500"
+                )}>
+                  #{standingsData.away.rank}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

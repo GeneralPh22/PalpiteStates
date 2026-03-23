@@ -121,6 +121,7 @@ All endpoints automatically fall back to rich demo data when API-Football is una
 - `GET /api/prelive-matches` — Upcoming NS fixtures from 6 main leagues (from DB, 60s cache)
 - `GET /api/top-bets` — Top 3 best betting opportunities of the day (probability ≥ 65%, cached 30min)
 - `GET /api/hot-matches` — Top 5 hottest matches by goal trend + league priority (cached 30min)
+- `GET /api/fixture/:id/standings` — League standings for home + away teams (rank, points, form)
 - `GET /api/player-stats?id=&season=` — Player season statistics
 - `GET /api/team-stats?team=&league=&season=` — Team statistics
 - `GET /api/live-odds?fixture=` — Legacy alias for fixture odds

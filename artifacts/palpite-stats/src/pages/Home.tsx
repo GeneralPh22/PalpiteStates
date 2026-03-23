@@ -18,6 +18,9 @@ import {
   Radio,
   Filter,
   Loader2,
+  Search,
+  X,
+  MapPin,
 } from "lucide-react";
 import { cn, formatProbability } from "@/lib/utils";
 import { MatchInsights } from "@/components/MatchInsights";
@@ -47,6 +50,12 @@ interface TodayMatchesResponse {
 interface LeagueGroup {
   league: LiveMatch["league"];
   matches: LiveMatch[];
+}
+
+interface CountryGroup {
+  country: string;
+  flag: string;
+  leagues: LeagueGroup[];
 }
 
 const today = new Date().toISOString().split("T")[0];
@@ -176,13 +185,50 @@ function confidenceColor(c: FeaturedBet["confidence"]) {
     : "text-zinc-400 bg-zinc-400/10 border-zinc-400/20";
 }
 
-function ProbabilityRing({ value }: { value: number }) {
-  const color = value >= 76 ? "text-emerald-400" : value >= 61 ? "text-amber-400" : "text-blue-400";
+function ConfidenceDots({ level }: { level: FeaturedBet["confidence"] }) {
+  const dots = level === "High" ? 3 : level === "Medium" ? 2 : 1;
+  const color = level === "High" ? "bg-emerald-400" : level === "Medium" ? "bg-amber-400" : "bg-zinc-500";
   return (
-    <div className={`text-2xl font-black tabular-nums ${color}`}>
-      {value}%
+    <div className="flex gap-0.5">
+      {[1, 2, 3].map(i => (
+        <span key={i} className={cn("w-1.5 h-1.5 rounded-full", i <= dots ? color : "bg-zinc-800")} />
+      ))}
     </div>
   );
+}
+
+function ProbabilityRing({ value }: { value: number }) {
+  const color = value >= 76 ? "text-emerald-400" : value >= 61 ? "text-amber-400" : "text-blue-400";
+  const barColor = value >= 76 ? "bg-emerald-500" : value >= 61 ? "bg-amber-500" : "bg-blue-500";
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className={`text-2xl font-black tabular-nums leading-none ${color}`}>{value}%</div>
+      <div className="w-14 h-1 bg-white/[0.06] rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${value}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function HotScoreFlames({ score }: { score: number }) {
+  const flames = score >= 80 ? 3 : score >= 60 ? 2 : 1;
+  return (
+    <div className="flex items-center gap-0.5">
+      {[1, 2, 3].map(i => (
+        <span key={i} className={cn("text-[11px]", i <= flames ? "opacity-100" : "opacity-20")}>🔥</span>
+      ))}
+    </div>
+  );
+}
+
+function kickoffTime(dateStr: string): string {
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return "";
+    return format(d, "HH:mm");
+  } catch {
+    return "";
+  }
 }
 
 function TeamLogoName({ logo, name }: { logo: string; name: string }) {
@@ -232,24 +278,31 @@ function TopBetsSection() {
             </div>
 
             <div className="px-4 py-3 space-y-3">
-              {/* Teams */}
+              {/* Teams + kickoff time */}
               <div className="space-y-1.5">
                 <TeamLogoName logo={bet.homeLogo} name={bet.homeTeam} />
                 <div className="text-[9px] text-zinc-700 pl-1">vs</div>
                 <TeamLogoName logo={bet.awayLogo} name={bet.awayTeam} />
+                {bet.date && (
+                  <div className="flex items-center gap-1 pt-0.5">
+                    <Clock className="w-2.5 h-2.5 text-zinc-700" />
+                    <span className="text-[9px] text-zinc-700 tabular-nums">{kickoffTime(bet.date)}</span>
+                  </div>
+                )}
               </div>
 
               {/* Market + Probability */}
-              <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2.5 space-y-1">
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2.5 space-y-1.5">
                 <div className="text-[9px] text-zinc-600 uppercase tracking-widest font-semibold">Previsão</div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-bold text-white leading-tight">{bet.market}</span>
                   <ProbabilityRing value={bet.probability} />
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                   <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border ${confidenceColor(bet.confidence)}`}>
                     {bet.marketRating}
                   </span>
+                  <ConfidenceDots level={bet.confidence} />
                 </div>
               </div>
 
@@ -307,33 +360,44 @@ function HotMatchesSection() {
       <div className="flex flex-col gap-2">
         {matches.map(m => (
           <Link key={m.fixtureId} href={`/fixture/${m.fixtureId}`}>
-            <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3 flex items-center gap-4 hover:border-white/[0.14] hover:bg-white/[0.04] transition-all cursor-pointer">
-              {/* League */}
-              <div className="flex items-center gap-1.5 w-32 flex-shrink-0">
-                {m.league.logo && (
-                  <img src={m.league.logo} alt={m.league.name} className="w-4 h-4 object-contain" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                )}
-                <span className="text-[10px] text-zinc-500 truncate">{m.league.name}</span>
-              </div>
-
-              {/* Teams */}
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <TeamLogoName logo={m.homeLogo} name={m.homeTeam} />
-                <span className="text-zinc-700 text-xs flex-shrink-0">×</span>
-                <TeamLogoName logo={m.awayLogo} name={m.awayTeam} />
-              </div>
-
-              {/* Stats */}
-              <div className="flex items-center gap-3 flex-shrink-0">
-                {m.avgGoals !== null && (
-                  <div className="text-right">
-                    <div className="text-[8.5px] text-zinc-700 uppercase tracking-wider">Média gols</div>
-                    <div className="text-sm font-bold text-amber-400 tabular-nums">{m.avgGoals.toFixed(1)}</div>
-                  </div>
-                )}
-                <div className="text-zinc-800">
-                  <ChevronRight className="w-4 h-4" />
+            <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3 flex items-center gap-4 hover:border-white/[0.14] hover:bg-white/[0.04] transition-all cursor-pointer group">
+              {/* League + time */}
+              <div className="flex flex-col gap-0.5 w-28 flex-shrink-0">
+                <div className="flex items-center gap-1.5">
+                  {m.league.logo && (
+                    <img src={m.league.logo} alt={m.league.name} className="w-3.5 h-3.5 object-contain flex-shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  )}
+                  <span className="text-[9px] text-zinc-600 truncate">{m.league.name}</span>
                 </div>
+                {m.date && (
+                  <span className="text-[9px] text-zinc-700 tabular-nums pl-0.5">{kickoffTime(m.date)}</span>
+                )}
+              </div>
+
+              {/* Teams + reason */}
+              <div className="flex-1 min-w-0 space-y-1">
+                <div className="flex items-center gap-2">
+                  <TeamLogoName logo={m.homeLogo} name={m.homeTeam} />
+                  <span className="text-zinc-700 text-[10px] flex-shrink-0">×</span>
+                  <TeamLogoName logo={m.awayLogo} name={m.awayTeam} />
+                </div>
+                {m.reason && (
+                  <p className="text-[9px] text-zinc-600 truncate">{m.reason}</p>
+                )}
+              </div>
+
+              {/* Hot score + avg goals */}
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <div className="flex flex-col items-end gap-0.5">
+                  <HotScoreFlames score={m.hotScore} />
+                  {m.avgGoals !== null && (
+                    <div className="text-right">
+                      <div className="text-[8px] text-zinc-700 uppercase tracking-wider">xG média</div>
+                      <div className="text-xs font-bold text-amber-400 tabular-nums">{m.avgGoals.toFixed(1)}</div>
+                    </div>
+                  )}
+                </div>
+                <ChevronRight className="w-4 h-4 text-zinc-800 group-hover:text-zinc-500 transition-colors" />
               </div>
             </div>
           </Link>
@@ -357,6 +421,18 @@ function groupByLeague(matches: LiveMatch[]): LeagueGroup[] {
       map.set(m.league.id, { league: m.league, matches: [] });
     }
     map.get(m.league.id)!.matches.push(m);
+  }
+  return Array.from(map.values());
+}
+
+function groupByCountry(groups: LeagueGroup[]): CountryGroup[] {
+  const map = new Map<string, CountryGroup>();
+  for (const g of groups) {
+    const key = g.league.country || "International";
+    if (!map.has(key)) {
+      map.set(key, { country: key, flag: g.league.flag ?? "", leagues: [] });
+    }
+    map.get(key)!.leagues.push(g);
   }
   return Array.from(map.values());
 }
@@ -562,6 +638,35 @@ function SectionDivider({ icon, label, count }: { icon: React.ReactNode; label: 
   );
 }
 
+function CountrySection({ cg, startIdx }: { cg: CountryGroup; startIdx: number }) {
+  const [open, setOpen] = useState(true);
+  const total = cg.leagues.reduce((s, g) => s + g.matches.length, 0);
+  return (
+    <div className="mb-2">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-white/[0.03] transition-colors group"
+      >
+        {cg.flag ? (
+          <img src={cg.flag} alt={cg.country} loading="lazy" className="w-5 h-3.5 object-cover rounded-[2px] flex-shrink-0 opacity-80" />
+        ) : (
+          <MapPin className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
+        )}
+        <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider flex-1 text-left">{cg.country}</span>
+        <span className="text-[10px] text-zinc-700 tabular-nums">({total})</span>
+        <ChevronDown className={cn("w-3.5 h-3.5 text-zinc-700 transition-transform flex-shrink-0", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="pl-1">
+          {cg.leagues.map((group, i) => (
+            <LeagueSection key={group.league.id} group={group} startIdx={startIdx + i * 3} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const ALL_LEAGUES = "all";
 const ALL_DATES   = "all";
 
@@ -612,6 +717,7 @@ export default function Home() {
   const [selectedLeague, setSelectedLeague] = useState<number | typeof ALL_LEAGUES>(ALL_LEAGUES);
   const [selectedDate, setSelectedDate]     = useState<string | typeof ALL_DATES>(ALL_DATES);
   const [liveOnly, setLiveOnly]             = useState(false);
+  const [searchQuery, setSearchQuery]       = useState("");
 
   // Unique dates present in the data
   const availableDates = useMemo(() => {
@@ -653,15 +759,27 @@ export default function Home() {
     return m;
   }, [allMatches, selectedDate, selectedLeague, liveOnly]);
 
-  const liveMatches = useMemo(() => sortMatchesByLeague(filtered.filter(m => isLiveStatus(m.status.short))), [filtered]);
-  const upcomingMatches = useMemo(() => sortMatchesByLeague(filtered.filter(m => !isLiveStatus(m.status.short) && !isFinishedStatus(m.status.short))), [filtered]);
-  const finishedMatches = useMemo(() => sortMatchesByLeague(filtered.filter(m => isFinishedStatus(m.status.short))), [filtered]);
+  // Apply search query on top of all other filters
+  const filteredBySearch = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return filtered;
+    return filtered.filter(m =>
+      m.homeTeam.name.toLowerCase().includes(q) ||
+      m.awayTeam.name.toLowerCase().includes(q) ||
+      m.league.name.toLowerCase().includes(q) ||
+      m.league.country.toLowerCase().includes(q)
+    );
+  }, [filtered, searchQuery]);
+
+  const liveMatches = useMemo(() => sortMatchesByLeague(filteredBySearch.filter(m => isLiveStatus(m.status.short))), [filteredBySearch]);
+  const upcomingMatches = useMemo(() => sortMatchesByLeague(filteredBySearch.filter(m => !isLiveStatus(m.status.short) && !isFinishedStatus(m.status.short))), [filteredBySearch]);
+  const finishedMatches = useMemo(() => sortMatchesByLeague(filteredBySearch.filter(m => isFinishedStatus(m.status.short))), [filteredBySearch]);
 
   const liveGroups = useMemo(() => groupByLeague(liveMatches), [liveMatches]);
   const upcomingGroups = useMemo(() => groupByLeague(upcomingMatches), [upcomingMatches]);
   const finishedGroups = useMemo(() => groupByLeague(finishedMatches), [finishedMatches]);
 
-  const totalFiltered = filtered.length;
+  const totalFiltered = filteredBySearch.length;
 
   return (
     <div className="pb-24">
@@ -758,6 +876,28 @@ export default function Home() {
             Refresh
           </button>
         </div>
+
+        {/* ── Search bar ── */}
+        {allMatches.length > 0 && (
+          <div className="relative mb-4">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Buscar time, liga ou país..."
+              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-primary/40 focus:bg-white/[0.06] transition-all"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* ── Date tabs ── */}
         {availableDates.length > 1 && (
@@ -873,17 +1013,31 @@ export default function Home() {
               <>
                 <Loader2 className="w-10 h-10 text-primary mb-4 animate-spin" />
                 <h3 className="text-xl font-medium text-white mb-2">
-                  No matches available – retrying...
+                  Nenhum jogo disponível – tentando novamente...
                 </h3>
                 <p className="text-muted-foreground text-sm">
-                  Connecting to match data. This refreshes automatically every 10 seconds.
+                  Conectando aos dados. Atualiza automaticamente a cada 10 segundos.
                 </p>
+              </>
+            ) : searchQuery.trim() ? (
+              <>
+                <Search className="w-12 h-12 text-zinc-700 mb-4" />
+                <h3 className="text-xl font-medium text-white mb-2">Nenhum resultado encontrado</h3>
+                <p className="text-muted-foreground text-sm mb-4">
+                  Nenhum jogo corresponde a "{searchQuery}".
+                </p>
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="text-sm text-primary border border-primary/30 px-4 py-1.5 rounded-full hover:bg-primary/10 transition-colors"
+                >
+                  Limpar busca
+                </button>
               </>
             ) : (
               <>
                 <Target className="w-12 h-12 text-muted-foreground mb-4" />
-                <h3 className="text-xl font-medium text-white mb-2">No matches for this league</h3>
-                <p className="text-muted-foreground text-sm">Select a different league or view all.</p>
+                <h3 className="text-xl font-medium text-white mb-2">Nenhum jogo neste filtro</h3>
+                <p className="text-muted-foreground text-sm">Selecione uma liga diferente ou veja todos.</p>
               </>
             )}
           </div>
@@ -898,12 +1052,8 @@ export default function Home() {
                     Live Now ({liveMatches.length})
                   </span>
                 </div>
-                {liveGroups.map((group, gi) => (
-                  <LeagueSection
-                    key={group.league.id}
-                    group={group}
-                    startIdx={gi * 3}
-                  />
+                {groupByCountry(liveGroups).map((cg, ci) => (
+                  <CountrySection key={cg.country} cg={cg} startIdx={ci * 6} />
                 ))}
               </div>
             )}
@@ -922,12 +1072,8 @@ export default function Home() {
                     </span>
                   </div>
                 )}
-                {upcomingGroups.map((group, gi) => (
-                  <LeagueSection
-                    key={group.league.id}
-                    group={group}
-                    startIdx={liveMatches.length + gi * 3}
-                  />
+                {groupByCountry(upcomingGroups).map((cg, ci) => (
+                  <CountrySection key={cg.country} cg={cg} startIdx={liveMatches.length + ci * 6} />
                 ))}
               </div>
             )}
@@ -936,12 +1082,8 @@ export default function Home() {
             {finishedGroups.length > 0 && (
               <div>
                 <SectionDivider icon={<CheckCircle2 className="w-3 h-3" />} label="Finished" count={finishedMatches.length} />
-                {finishedGroups.map((group, gi) => (
-                  <LeagueSection
-                    key={group.league.id}
-                    group={group}
-                    startIdx={liveMatches.length + upcomingMatches.length + gi * 3}
-                  />
+                {groupByCountry(finishedGroups).map((cg, ci) => (
+                  <CountrySection key={cg.country} cg={cg} startIdx={liveMatches.length + upcomingMatches.length + ci * 6} />
                 ))}
               </div>
             )}
