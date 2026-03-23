@@ -15,6 +15,7 @@ import {
   Flame,
   BarChart2,
   Calendar,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
@@ -28,6 +29,7 @@ const NAV_ITEMS = [
   { href: "/analysis", label: "Daily Analysis", icon: BarChart2 },
   { href: "/ai", label: "AI Predictions", icon: Cpu },
   { href: "/top-players", label: "Top Players", icon: Users },
+  { href: "/rankings", label: "Stats Rankings", icon: BarChart3 },
   { href: "/value-bets", label: "Value Bets", icon: Flame },
   { href: "/pricing", label: "Pricing", icon: Crown },
 ];

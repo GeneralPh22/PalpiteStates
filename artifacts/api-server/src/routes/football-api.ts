@@ -1762,6 +1762,216 @@ router.get("/fixture/:id/squad", async (req, res) => {
   }
 });
 
+// ── Rankings ───────────────────────────────────────────────────────────────────
+// Strategy: league-goals uses standings API (8 calls per refresh, 30 min cache).
+// team-corners + team-cards scan the in-memory cache for data already fetched
+// by FixtureDetail page visits — zero extra API calls.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RANKINGS_TTL = 30 * 60 * 1000; // 30 minutes
+
+interface LeagueGoalsEntry {
+  leagueId: number;
+  leagueName: string;
+  country: string;
+  logo: string;
+  flag: string;
+  totalMatches: number;
+  totalGoals: number;
+  avgGoals: number;
+}
+
+interface TeamCornersEntry {
+  teamId: number;
+  teamName: string;
+  teamLogo: string;
+  leagueId: number;
+  leagueName: string;
+  played: number;
+  totalCorners: number;
+  avgCorners: number;
+}
+
+interface TeamCardsEntry {
+  teamId: number;
+  teamName: string;
+  teamLogo: string;
+  leagueId: number;
+  leagueName: string;
+  played: number;
+  yellowCards: number;
+  redCards: number;
+  totalCards: number;
+  avgCards: number;
+}
+
+let leagueGoalsRankCache: { data: LeagueGoalsEntry[]; ts: number } | null = null;
+
+/** Scan in-memory fixture-stats cache for corner data per team. */
+function extractCornersFromCache(): TeamCornersEntry[] {
+  const teamMap = new Map<number, {
+    name: string; logo: string; leagueId: number; leagueName: string;
+    totalCorners: number; matches: number;
+  }>();
+
+  for (const [key, val] of cache.entries()) {
+    if (!key.startsWith("/fixtures/statistics?fixture=")) continue;
+    const response = (val.data as any)?.response;
+    if (!Array.isArray(response)) continue;
+
+    for (const ts of response) {
+      const teamId: number | undefined = ts.team?.id;
+      const teamName: string = ts.team?.name ?? "Unknown";
+      const teamLogo: string = ts.team?.logo ?? "";
+      const cornerStat = (ts.statistics ?? []).find((s: any) => s.type === "Corner Kicks");
+      const corners = cornerStat ? (Number(cornerStat.value) || 0) : null;
+      if (!teamId || corners === null) continue;
+
+      if (!teamMap.has(teamId)) {
+        teamMap.set(teamId, { name: teamName, logo: teamLogo, leagueId: 0, leagueName: "", totalCorners: 0, matches: 0 });
+      }
+      const entry = teamMap.get(teamId)!;
+      entry.totalCorners += corners;
+      entry.matches += 1;
+    }
+  }
+
+  return [...teamMap.entries()]
+    .map(([id, d]) => ({
+      teamId: id, teamName: d.name, teamLogo: d.logo,
+      leagueId: d.leagueId, leagueName: d.leagueName,
+      played: d.matches, totalCorners: d.totalCorners,
+      avgCorners: d.matches > 0 ? +((d.totalCorners / d.matches).toFixed(2)) : 0,
+    }))
+    .filter(t => t.played >= 1)
+    .sort((a, b) => b.avgCorners - a.avgCorners)
+    .slice(0, 20);
+}
+
+/** Scan in-memory team-stats cache for card data per team. */
+function extractCardsFromCache(): TeamCardsEntry[] {
+  const results: TeamCardsEntry[] = [];
+  const seen = new Set<number>();
+
+  for (const [key, val] of cache.entries()) {
+    if (!key.startsWith("/teams/statistics?")) continue;
+    const response = (val.data as any)?.response;
+    if (!response?.team?.id) continue;
+
+    const teamId: number = response.team.id;
+    if (seen.has(teamId)) continue;
+    seen.add(teamId);
+
+    const played: number = response.fixtures?.played?.total ?? 0;
+    if (!played) continue;
+
+    let yellow = 0;
+    const yellowByMin = response.cards?.yellow ?? {};
+    for (const period of Object.values(yellowByMin) as any[]) {
+      yellow += period?.total ?? 0;
+    }
+    let red = 0;
+    const redByMin = response.cards?.red ?? {};
+    for (const period of Object.values(redByMin) as any[]) {
+      red += period?.total ?? 0;
+    }
+
+    results.push({
+      teamId,
+      teamName: response.team.name,
+      teamLogo: response.team.logo,
+      leagueId: response.league?.id ?? 0,
+      leagueName: response.league?.name ?? "",
+      played,
+      yellowCards: yellow,
+      redCards: red,
+      totalCards: yellow + red,
+      avgCards: played > 0 ? +((yellow + red) / played).toFixed(2) : 0,
+    });
+  }
+
+  return results.sort((a, b) => b.avgCards - a.avgCards).slice(0, 20);
+}
+
+// ── GET /rankings/league-goals ─────────────────────────────────────────────
+router.get("/rankings/league-goals", async (_req, res) => {
+  try {
+    if (leagueGoalsRankCache && Date.now() - leagueGoalsRankCache.ts < RANKINGS_TTL) {
+      return res.json({ available: true, leagues: leagueGoalsRankCache.data, cached: true });
+    }
+
+    if (apiSuspended && Date.now() - lastSuspendedCheck < SUSPENDED_CACHE_TTL) {
+      const stale = leagueGoalsRankCache?.data ?? [];
+      return res.json({ available: stale.length > 0, leagues: stale, stale: true });
+    }
+
+    const season = new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1;
+    const entries: LeagueGoalsEntry[] = [];
+
+    for (const leagueId of TOP_LEAGUES) {
+      const { data, ok } = await apiFetch(`/standings?league=${leagueId}&season=${season}`, RANKINGS_TTL);
+      if (!ok || !Array.isArray(data?.response) || data.response.length === 0) continue;
+
+      const leagueObj = data.response[0]?.league;
+      if (!leagueObj) continue;
+
+      const standing = leagueObj.standings?.[0] ?? [];
+      if (!standing.length) continue;
+
+      let totalGoals = 0;
+      let totalMatchTeams = 0;
+      for (const team of standing) {
+        totalGoals   += team.all?.goals?.for ?? 0;
+        totalMatchTeams += team.all?.played ?? 0;
+      }
+
+      const totalMatches = Math.round(totalMatchTeams / 2);
+      if (totalMatches === 0) continue;
+
+      entries.push({
+        leagueId,
+        leagueName: leagueObj.name,
+        country:    leagueObj.country ?? "",
+        logo:       leagueObj.logo ?? "",
+        flag:       leagueObj.flag ?? "",
+        totalMatches,
+        totalGoals,
+        avgGoals: +(totalGoals / totalMatches).toFixed(2),
+      });
+    }
+
+    entries.sort((a, b) => b.avgGoals - a.avgGoals);
+    leagueGoalsRankCache = { data: entries, ts: Date.now() };
+    console.log(`[rankings/league-goals] Computed for ${entries.length} leagues`);
+    return res.json({ available: entries.length > 0, leagues: entries });
+  } catch (err: any) {
+    console.error("[rankings/league-goals]", err.message);
+    return res.json({ available: false, leagues: [] });
+  }
+});
+
+// ── GET /rankings/team-corners ─────────────────────────────────────────────
+router.get("/rankings/team-corners", (_req, res) => {
+  try {
+    const corners = extractCornersFromCache();
+    return res.json({ available: corners.length > 0, teams: corners, source: "cache" });
+  } catch (err: any) {
+    console.error("[rankings/team-corners]", err.message);
+    return res.json({ available: false, teams: [] });
+  }
+});
+
+// ── GET /rankings/team-cards ───────────────────────────────────────────────
+router.get("/rankings/team-cards", (_req, res) => {
+  try {
+    const cards = extractCardsFromCache();
+    return res.json({ available: cards.length > 0, teams: cards, source: "cache" });
+  } catch (err: any) {
+    console.error("[rankings/team-cards]", err.message);
+    return res.json({ available: false, teams: [] });
+  }
+});
+
 // ── api-status ─────────────────────────────────────────────────────────────────
 router.get("/api-status", (_req, res) => {
   res.json({ suspended: apiSuspended, cacheSize: cache.size });

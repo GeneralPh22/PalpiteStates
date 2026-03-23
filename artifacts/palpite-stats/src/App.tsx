@@ -22,6 +22,7 @@ import SubscriptionSuccess from "@/pages/SubscriptionSuccess";
 import ValueBets from "@/pages/ValueBets";
 import TopPlayers from "@/pages/TopPlayers";
 import DailyAnalysis from "@/pages/DailyAnalysis";
+import StatsRankings from "@/pages/StatsRankings";
 import SeoLiveMatches from "@/pages/seo/LiveMatches";
 import SeoTodayBets from "@/pages/seo/TodayBets";
 import SeoTodayPredictions from "@/pages/seo/TodayPredictions";
@@ -57,6 +58,7 @@ function Router() {
         <Route path="/odds" component={Odds} />
         <Route path="/ai" component={AiPredictions} />
         <Route path="/value-bets" component={ValueBets} />
+        <Route path="/rankings" component={StatsRankings} />
         <Route path="/login" component={Login} />
         <Route path="/register" component={Register} />
         <Route path="/pricing" component={Pricing} />
