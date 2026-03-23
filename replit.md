@@ -4,6 +4,18 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 3)
+
+- **Layout.tsx**: Added "Ligas" trophy-icon toggle button next to logo; fixed header div structure
+- **LeagueNav.tsx**: Collapsible country/league sidebar with star favorites + overflow scroll
+- **useFavoriteLeagues.ts**: localStorage hook for persisting league favorites
+- **leagues.ts**: 12 countries × 2 divisions, all league IDs mapped
+- **AffiliateButtons.tsx**: Reusable Betfair + Betano buttons (compact/full variants)
+- **Home.tsx**: FavoriteLeaguesSection (shows starred leagues' matches), GoalProbabilitySection (top 5 by xG), URL `?league=X` param reading
+- **TopPlayers.tsx**: Fully rewritten to use real `/api/top-players-stats` endpoint; 4 tabs (scorers/assists/shots/keyPasses), player photos + team logo overlays, position badges, horizontal bars
+- **FixtureDetail.tsx**: Stats tab reorganized into 3 labeled sections (Forma / Ataque / Defesa); AffiliateButtons added to AI Analysis tab
+- **football-api.ts**: `/api/top-players-stats` endpoint added — fetches Premier League (39), Brasileirão (71), La Liga (140); returns 4 sorted lists; 6h cache
+
 **Target domain:** `www.palpitestats.com.br`
 
 ## Stack

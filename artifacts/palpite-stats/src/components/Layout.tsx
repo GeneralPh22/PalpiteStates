@@ -16,10 +16,12 @@ import {
   BarChart2,
   Calendar,
   BarChart3,
+  Trophy,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { LeagueNav } from "@/components/LeagueNav";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -67,6 +69,7 @@ function AccessBadge() {
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isLeagueNavOpen, setIsLeagueNavOpen] = useState(false);
   const { user, logout, loading } = useAuth();
 
   async function handleLogout() {
@@ -76,25 +79,50 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
+      {/* League Nav Sidebar Overlay */}
+      {isLeagueNavOpen && (
+        <div className="fixed inset-0 z-[60] flex">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setIsLeagueNavOpen(false)}
+          />
+          {/* Sidebar panel */}
+          <div className="relative z-10 w-72 max-w-[85vw] h-full shadow-2xl">
+            <LeagueNav onClose={() => setIsLeagueNavOpen(false)} />
+          </div>
+        </div>
+      )}
+
       {/* Top Navbar */}
       <header className="sticky top-0 z-50 glass-panel border-b border-white/10 h-16 md:h-18 flex items-center">
         <div className="container mx-auto px-4 md:px-6 flex items-center justify-between gap-3">
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 group flex-shrink-0">
-            <img
-              src={`${BASE}/logo.png`}
-              alt="PalpiteStats"
-              className="w-8 h-8 md:w-9 md:h-9 object-contain rounded-lg flex-shrink-0"
-              onError={(e) => {
-                const target = e.target as HTMLImageElement;
-                target.style.display = "none";
-              }}
-            />
-            <span className="font-display text-lg md:text-xl font-bold tracking-tight text-white">
-              Palpite<span className="text-primary">Stats</span>
-            </span>
-            <AccessBadge />
-          </Link>
+          {/* Leagues sidebar toggle + Logo */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button
+              onClick={() => setIsLeagueNavOpen(true)}
+              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/[0.06] transition-colors"
+              title="Ligas"
+            >
+              <Trophy className="w-4 h-4" />
+              <span className="hidden sm:block text-xs font-semibold">Ligas</span>
+            </button>
+            <Link href="/" className="flex items-center gap-2 group flex-shrink-0">
+              <img
+                src={`${BASE}/logo.png`}
+                alt="PalpiteStats"
+                className="w-8 h-8 md:w-9 md:h-9 object-contain rounded-lg flex-shrink-0"
+                onError={(e) => {
+                  const target = e.target as HTMLImageElement;
+                  target.style.display = "none";
+                }}
+              />
+              <span className="font-display text-lg md:text-xl font-bold tracking-tight text-white">
+                Palpite<span className="text-primary">Stats</span>
+              </span>
+              <AccessBadge />
+            </Link>
+          </div>
 
           {/* Desktop Nav */}
           <nav className="hidden lg:flex items-center gap-0.5">

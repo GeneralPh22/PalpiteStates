@@ -1762,6 +1762,105 @@ router.get("/fixture/:id/squad", async (req, res) => {
   }
 });
 
+// ── Top Players Stats ──────────────────────────────────────────────────────────
+// Fetches topscorers + topassists from 3 leagues, merges & derives 4 categories.
+// Cache: 6 hours. Total cost: 6 API calls per cache cycle (very low).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TOP_PLAYERS_TTL = 6 * 60 * 60 * 1000; // 6 hours
+const TOP_PLAYERS_LEAGUES = [39, 71, 140];   // Premier League, Brasileirão, La Liga
+let topPlayersCache: { data: any; ts: number } | null = null;
+
+function toNumber(v: any): number {
+  if (v == null) return 0;
+  if (typeof v === "number") return v;
+  return parseFloat(String(v)) || 0;
+}
+
+router.get("/top-players-stats", async (_req, res) => {
+  try {
+    if (topPlayersCache && Date.now() - topPlayersCache.ts < TOP_PLAYERS_TTL) {
+      return res.json({ available: true, ...topPlayersCache.data, cached: true });
+    }
+
+    if (apiSuspended && Date.now() - lastSuspendedCheck < SUSPENDED_CACHE_TTL) {
+      if (topPlayersCache) return res.json({ available: true, ...topPlayersCache.data, stale: true });
+      return res.json({ available: false, scorers: [], assists: [], shots: [], keyPasses: [] });
+    }
+
+    const season = new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1;
+
+    const fetchList = async (path: string): Promise<any[]> => {
+      const { data, ok } = await apiFetch(path, TOP_PLAYERS_TTL);
+      if (!ok || !Array.isArray(data?.response)) return [];
+      return data.response;
+    };
+
+    // 6 parallel calls (topscorers + topassists for 3 leagues)
+    const scorerResults = await Promise.all(
+      TOP_PLAYERS_LEAGUES.map(lid => fetchList(`/players/topscorers?league=${lid}&season=${season}`))
+    );
+    const assistResults = await Promise.all(
+      TOP_PLAYERS_LEAGUES.map(lid => fetchList(`/players/topassists?league=${lid}&season=${season}`))
+    );
+
+    // Merge all into one map (player id → best stats entry)
+    const playerMap = new Map<number, any>();
+
+    const mergeEntry = (entry: any) => {
+      if (!entry?.player?.id) return;
+      const pid = entry.player.id;
+      const stats = entry.statistics?.[0];
+      if (!stats) return;
+      const minutes = toNumber(stats.games?.minutes);
+      if (minutes < 300) return; // minimum 300 minutes played
+
+      if (!playerMap.has(pid)) {
+        playerMap.set(pid, {
+          id:         pid,
+          name:       entry.player.name,
+          photo:      entry.player.photo ?? null,
+          age:        entry.player.age ?? null,
+          nationality: entry.player.nationality ?? null,
+          teamName:   stats.team?.name ?? null,
+          teamLogo:   stats.team?.logo ?? null,
+          leagueName: stats.league?.name ?? null,
+          leagueLogo: stats.league?.logo ?? null,
+          position:   stats.games?.position ?? null,
+          appearances: toNumber(stats.games?.appearences),
+          minutes,
+          goals:      toNumber(stats.goals?.total),
+          assists:    toNumber(stats.goals?.assists),
+          shots:      toNumber(stats.shots?.total),
+          shotsOnTarget: toNumber(stats.shots?.on),
+          keyPasses:  toNumber(stats.passes?.key),
+          rating:     stats.games?.rating ? parseFloat(stats.games.rating) : null,
+        });
+      }
+    };
+
+    [...scorerResults, ...assistResults].flat().forEach(mergeEntry);
+
+    const all = Array.from(playerMap.values());
+    const top = (arr: any[], key: string, n = 10) =>
+      [...arr].sort((a, b) => (b[key] ?? 0) - (a[key] ?? 0)).slice(0, n).map((p, i) => ({ ...p, rank: i + 1 }));
+
+    const result = {
+      scorers:   top(all, "goals"),
+      assists:   top(all, "assists"),
+      shots:     top(all, "shots"),
+      keyPasses: top(all, "keyPasses"),
+    };
+
+    topPlayersCache = { data: result, ts: Date.now() };
+    console.log(`[top-players-stats] Built from ${all.length} players across ${TOP_PLAYERS_LEAGUES.length} leagues`);
+    return res.json({ available: all.length > 0, ...result });
+  } catch (err: any) {
+    console.error("[top-players-stats]", err.message);
+    return res.json({ available: false, scorers: [], assists: [], shots: [], keyPasses: [] });
+  }
+});
+
 // ── Rankings ───────────────────────────────────────────────────────────────────
 // Strategy: league-goals uses standings API (8 calls per refresh, 30 min cache).
 // team-corners + team-cards scan the in-memory cache for data already fetched

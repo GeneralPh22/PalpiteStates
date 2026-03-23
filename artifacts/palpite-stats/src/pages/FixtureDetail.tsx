@@ -1,4 +1,5 @@
 import { useParams, Link } from "wouter";
+import { AffiliateButtons } from "@/components/AffiliateButtons";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useState } from "react";
@@ -431,53 +432,84 @@ function TabTeamStats({ fixture, stats, teamStatsData }: { fixture: Fixture; sta
         </div>
       </div>
 
-      {/* ── Season stats ─────────────────────────────────────────────────── */}
+      {/* ── Season stats (3 sections: Form / Attack / Defense) ──────────── */}
       {hasSeasonStats ? (
         <>
-          {/* W/D/L record */}
+          {/* ── FORMA ──────────────────────────────────────────────────────── */}
           {(hS?.played || aS?.played) && (
-            <div className="grid grid-cols-2 gap-3">
-              {[{ t: fixture.homeTeam, s: hS }, { t: fixture.awayTeam, s: aS }].map(({ t, s }) => (
-                <div key={t.id} className="bg-[#09090b] border border-white/[0.07] rounded-xl p-3 text-center">
-                  <div className="text-[10px] text-zinc-600 uppercase tracking-wide mb-1.5">{s?.played ?? "—"} jogos</div>
-                  <div className="flex justify-center gap-3 text-sm font-bold">
-                    <span className="text-primary">{s?.wins ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">V</span></span>
-                    <span className="text-zinc-400">{s?.draws ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">E</span></span>
-                    <span className="text-red-400">{s?.losses ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">D</span></span>
-                  </div>
-                  {s?.form && (
-                    <div className="flex justify-center gap-0.5 mt-2">
-                      {s.form.slice(-5).split("").map((r: string, i: number) => (
-                        <span key={i} className={cn("w-4 h-4 rounded-sm text-[8px] font-black flex items-center justify-center",
-                          r === "W" ? "bg-primary/20 text-primary" : r === "D" ? "bg-zinc-700/60 text-zinc-400" : "bg-red-900/40 text-red-400"
-                        )}>{r}</span>
-                      ))}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.06]">
+                  Forma
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {[{ t: fixture.homeTeam, s: hS }, { t: fixture.awayTeam, s: aS }].map(({ t, s }) => (
+                  <div key={t.id} className="bg-[#09090b] border border-white/[0.07] rounded-xl p-3 text-center">
+                    <div className="text-[10px] text-zinc-600 uppercase tracking-wide mb-1.5">{s?.played ?? "—"} jogos</div>
+                    <div className="flex justify-center gap-3 text-sm font-bold">
+                      <span className="text-primary">{s?.wins ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">V</span></span>
+                      <span className="text-zinc-400">{s?.draws ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">E</span></span>
+                      <span className="text-red-400">{s?.losses ?? "—"}<span className="text-[9px] text-zinc-600 font-normal ml-0.5">D</span></span>
                     </div>
-                  )}
-                </div>
-              ))}
+                    {s?.form && (
+                      <div className="flex justify-center gap-0.5 mt-2">
+                        {s.form.slice(-5).split("").map((r: string, i: number) => (
+                          <span key={i} className={cn("w-4 h-4 rounded-sm text-[8px] font-black flex items-center justify-center",
+                            r === "W" ? "bg-primary/20 text-primary" : r === "D" ? "bg-zinc-700/60 text-zinc-400" : "bg-red-900/40 text-red-400"
+                          )}>{r}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="bg-[#09090b] border border-white/[0.07] rounded-xl p-4 mt-3 space-y-4">
+                <SeasonStatRow label="Vitórias" homeVal={hS?.wins ?? null} awayVal={aS?.wins ?? null} />
+                <SeasonStatRow label="Empates" homeVal={hS?.draws ?? null} awayVal={aS?.draws ?? null} />
+                <SeasonStatRow label="Derrotas" homeVal={hS?.losses ?? null} awayVal={aS?.losses ?? null} inverted />
+              </div>
             </div>
           )}
 
-          <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-5 space-y-4">
-            <SeasonStatRow label="Gols Marcados" homeVal={hS?.goalsScored ?? null} awayVal={aS?.goalsScored ?? null} />
-            <SeasonStatRow label="Gols Sofridos" homeVal={hS?.goalsConceded ?? null} awayVal={aS?.goalsConceded ?? null} inverted />
-            <SeasonStatRow label="Méd. Gols (favor)" homeVal={hS?.avgGoalsScored ? parseFloat(hS.avgGoalsScored) : null} awayVal={aS?.avgGoalsScored ? parseFloat(aS.avgGoalsScored) : null} format={(v) => v.toFixed(2)} />
-            <SeasonStatRow label="Méd. Gols (contra)" homeVal={hS?.avgGoalsConceded ? parseFloat(hS.avgGoalsConceded) : null} awayVal={aS?.avgGoalsConceded ? parseFloat(aS.avgGoalsConceded) : null} inverted format={(v) => v.toFixed(2)} />
-            {(hS?.shotsTotal != null || aS?.shotsTotal != null) && (
-              <SeasonStatRow label="Chutes Totais" homeVal={hS?.shotsTotal ?? null} awayVal={aS?.shotsTotal ?? null} />
-            )}
-            {(hS?.shotsOnTarget != null || aS?.shotsOnTarget != null) && (
-              <SeasonStatRow label="Chutes no Gol" homeVal={hS?.shotsOnTarget ?? null} awayVal={aS?.shotsOnTarget ?? null} />
-            )}
-            {(hS?.foulsTotal != null || aS?.foulsTotal != null) && (
-              <SeasonStatRow label="Faltas" homeVal={hS?.foulsTotal ?? null} awayVal={aS?.foulsTotal ?? null} inverted />
-            )}
-            {(hS?.yellowCards != null || aS?.yellowCards != null) && (
-              <SeasonStatRow label="Cartões Amarelos" homeVal={hS?.yellowCards ?? null} awayVal={aS?.yellowCards ?? null} inverted />
-            )}
-            <SeasonStatRow label="Clean Sheets" homeVal={hS?.cleanSheets ?? null} awayVal={aS?.cleanSheets ?? null} />
-            <SeasonStatRow label="Sem Marcar" homeVal={hS?.failedToScore ?? null} awayVal={aS?.failedToScore ?? null} inverted />
+          {/* ── ATAQUE ─────────────────────────────────────────────────────── */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-[9px] font-black uppercase tracking-widest text-red-400/70 bg-red-500/[0.06] px-2 py-0.5 rounded-full border border-red-500/[0.12]">
+                Ataque
+              </span>
+            </div>
+            <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-5 space-y-4">
+              <SeasonStatRow label="Gols Marcados" homeVal={hS?.goalsScored ?? null} awayVal={aS?.goalsScored ?? null} />
+              <SeasonStatRow label="Méd. Gols (favor)" homeVal={hS?.avgGoalsScored ? parseFloat(hS.avgGoalsScored) : null} awayVal={aS?.avgGoalsScored ? parseFloat(aS.avgGoalsScored) : null} format={(v) => v.toFixed(2)} />
+              {(hS?.shotsTotal != null || aS?.shotsTotal != null) && (
+                <SeasonStatRow label="Chutes Totais" homeVal={hS?.shotsTotal ?? null} awayVal={aS?.shotsTotal ?? null} />
+              )}
+              {(hS?.shotsOnTarget != null || aS?.shotsOnTarget != null) && (
+                <SeasonStatRow label="Chutes no Gol" homeVal={hS?.shotsOnTarget ?? null} awayVal={aS?.shotsOnTarget ?? null} />
+              )}
+              <SeasonStatRow label="Sem Marcar" homeVal={hS?.failedToScore ?? null} awayVal={aS?.failedToScore ?? null} inverted />
+            </div>
+          </div>
+
+          {/* ── DEFESA ─────────────────────────────────────────────────────── */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-[9px] font-black uppercase tracking-widest text-blue-400/70 bg-blue-500/[0.06] px-2 py-0.5 rounded-full border border-blue-500/[0.12]">
+                Defesa
+              </span>
+            </div>
+            <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-5 space-y-4">
+              <SeasonStatRow label="Gols Sofridos" homeVal={hS?.goalsConceded ?? null} awayVal={aS?.goalsConceded ?? null} inverted />
+              <SeasonStatRow label="Méd. Gols (contra)" homeVal={hS?.avgGoalsConceded ? parseFloat(hS.avgGoalsConceded) : null} awayVal={aS?.avgGoalsConceded ? parseFloat(aS.avgGoalsConceded) : null} inverted format={(v) => v.toFixed(2)} />
+              <SeasonStatRow label="Clean Sheets" homeVal={hS?.cleanSheets ?? null} awayVal={aS?.cleanSheets ?? null} />
+              {(hS?.foulsTotal != null || aS?.foulsTotal != null) && (
+                <SeasonStatRow label="Faltas" homeVal={hS?.foulsTotal ?? null} awayVal={aS?.foulsTotal ?? null} inverted />
+              )}
+              {(hS?.yellowCards != null || aS?.yellowCards != null) && (
+                <SeasonStatRow label="Cartões Amarelos" homeVal={hS?.yellowCards ?? null} awayVal={aS?.yellowCards ?? null} inverted />
+              )}
+            </div>
           </div>
 
           {/* source badge */}
@@ -1113,6 +1145,9 @@ function TabAI({ fixture, analysis, oddsData, h2hData }: {
           ⚠️ Predictions are statistical estimates only. No outcome is guaranteed. Bet responsibly.
         </p>
       </div>
+
+      {/* ── Affiliate Buttons ─────────────────────────────────────── */}
+      <AffiliateButtons label="Apostar neste jogo" />
 
       {/* ── Responsible Gambling ─────────────────────────────────── */}
       <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] px-4 py-3 flex items-start gap-3">

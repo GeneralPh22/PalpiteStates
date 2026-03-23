@@ -2,8 +2,8 @@ import { useGetMatches } from "@workspace/api-client-react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
-import { Link } from "wouter";
-import { useState, useMemo } from "react";
+import { Link, useSearch } from "wouter";
+import { useState, useMemo, useEffect } from "react";
 import {
   Activity,
   ChevronRight,
@@ -21,10 +21,15 @@ import {
   Search,
   X,
   MapPin,
+  Star,
+  TrendingUp,
+  Zap,
 } from "lucide-react";
 import { cn, formatProbability } from "@/lib/utils";
 import { MatchInsights } from "@/components/MatchInsights";
 import { sortMatchesByLeague } from "@/lib/leaguePriority";
+import { useFavoriteLeagues } from "@/hooks/useFavoriteLeagues";
+import { COUNTRY_LEAGUES } from "@/lib/leagues";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -407,6 +412,146 @@ function HotMatchesSection() {
   );
 }
 
+// ── Favorite Leagues Section ──────────────────────────────────────────────────
+function FavoriteLeaguesSection({ allMatches }: { allMatches: LiveMatch[] }) {
+  const { favorites } = useFavoriteLeagues();
+  if (favorites.length === 0) return null;
+
+  const favMatches = allMatches.filter(m => favorites.includes(m.league.id));
+  if (favMatches.length === 0) return null;
+
+  const byLeague = groupByLeague(sortMatchesByLeague(favMatches));
+
+  return (
+    <div className="mb-8 border border-amber-500/20 rounded-2xl overflow-hidden bg-amber-500/[0.03]">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-amber-500/15 bg-amber-500/[0.05]">
+        <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
+        <h2 className="text-sm font-bold text-amber-300">Ligas Favoritas</h2>
+        <span className="ml-auto text-[10px] text-amber-600 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+          {favMatches.length} jogos
+        </span>
+      </div>
+      <div className="divide-y divide-white/[0.04]">
+        {byLeague.map(group => (
+          <div key={group.league.id} className="px-4 py-2">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              {group.league.logo && (
+                <img src={group.league.logo} alt={group.league.name} className="w-3.5 h-3.5 object-contain opacity-70" loading="lazy" />
+              )}
+              <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider truncate">
+                {group.league.name}
+              </span>
+            </div>
+            {group.matches.map(m => (
+              <Link key={m.id} href={`/fixture/${m.id}`}>
+                <div className="flex items-center justify-between gap-3 py-1.5 hover:bg-white/[0.03] rounded-lg px-1 cursor-pointer transition-colors group">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    {m.homeTeam.logo && <img src={m.homeTeam.logo} className="w-4 h-4 object-contain flex-shrink-0" loading="lazy" />}
+                    <span className="text-xs text-zinc-300 truncate">{m.homeTeam.name}</span>
+                  </div>
+                  <div className="flex-shrink-0 px-2 text-center">
+                    {LIVE_STATUSES.has(m.status.short) ? (
+                      <span className="text-[10px] font-bold text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded">
+                        {m.score.home ?? 0}–{m.score.away ?? 0}
+                      </span>
+                    ) : ["FT", "AET", "PEN"].includes(m.status.short) ? (
+                      <span className="text-[10px] font-bold text-zinc-400">
+                        {m.score.home ?? 0}–{m.score.away ?? 0}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-zinc-600 tabular-nums">{kickoffTime(m.date)}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
+                    <span className="text-xs text-zinc-300 truncate text-right">{m.awayTeam.name}</span>
+                    {m.awayTeam.logo && <img src={m.awayTeam.logo} className="w-4 h-4 object-contain flex-shrink-0" loading="lazy" />}
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Goal Probability Section ──────────────────────────────────────────────────
+function GoalProbabilitySection() {
+  const { data, isLoading } = useHotMatches();
+  if (isLoading || !data?.available || !data.matches.length) return null;
+
+  // Matches with avgGoals set, sorted by avgGoals desc, top 5
+  const top5 = [...data.matches]
+    .filter(m => m.avgGoals !== null && m.avgGoals > 0)
+    .sort((a, b) => (b.avgGoals ?? 0) - (a.avgGoals ?? 0))
+    .slice(0, 5);
+
+  if (top5.length === 0) return null;
+
+  const maxGoals = top5[0]?.avgGoals ?? 1;
+
+  return (
+    <div className="mb-10">
+      <div className="flex items-center gap-2 mb-4">
+        <Zap className="w-5 h-5 text-yellow-400" />
+        <h2 className="text-lg font-display font-bold text-white">Maior Probabilidade de Gols</h2>
+        <span className="text-xs text-zinc-600 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.07]">
+          Top 5 jogos de hoje
+        </span>
+      </div>
+      <div className="grid gap-2">
+        {top5.map((m, i) => (
+          <Link key={m.fixtureId} href={`/fixture/${m.fixtureId}`}>
+            <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3 hover:border-white/[0.14] hover:bg-white/[0.04] transition-all cursor-pointer group">
+              <div className="flex items-center gap-3">
+                {/* Rank */}
+                <div className={cn(
+                  "w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black flex-shrink-0",
+                  i === 0 ? "bg-amber-400/20 text-amber-300" : i === 1 ? "bg-zinc-400/15 text-zinc-400" : "bg-white/[0.04] text-zinc-600"
+                )}>
+                  {i + 1}
+                </div>
+                {/* Teams */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+                    {m.homeLogo && <img src={m.homeLogo} alt="" className="w-3.5 h-3.5 object-contain" loading="lazy" />}
+                    <span className="truncate">{m.homeTeam}</span>
+                    <span className="text-zinc-700 flex-shrink-0">×</span>
+                    <span className="truncate">{m.awayTeam}</span>
+                    {m.awayLogo && <img src={m.awayLogo} alt="" className="w-3.5 h-3.5 object-contain" loading="lazy" />}
+                  </div>
+                  {/* xG bar */}
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <div className="flex-1 h-1 bg-white/[0.06] rounded-full overflow-hidden">
+                      <div
+                        className={cn("h-full rounded-full", i === 0 ? "bg-amber-400" : "bg-yellow-500")}
+                        style={{ width: `${((m.avgGoals ?? 0) / maxGoals) * 100}%` }}
+                      />
+                    </div>
+                    <span className={cn("text-[10px] font-black tabular-nums flex-shrink-0", i === 0 ? "text-amber-300" : "text-yellow-400")}>
+                      {(m.avgGoals ?? 0).toFixed(2)} xG
+                    </span>
+                  </div>
+                </div>
+                {/* League + time */}
+                <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                  <div className="flex items-center gap-1">
+                    {m.league.logo && <img src={m.league.logo} alt="" className="w-3 h-3 object-contain opacity-60" loading="lazy" />}
+                    <span className="text-[8px] text-zinc-700 truncate max-w-[60px]">{m.league.name}</span>
+                  </div>
+                  {m.date && <span className="text-[9px] text-zinc-700 tabular-nums">{kickoffTime(m.date)}</span>}
+                  <ChevronRight className="w-3 h-3 text-zinc-800 group-hover:text-zinc-500 transition-colors mt-0.5" />
+                </div>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function isLiveStatus(short: string) {
   return LIVE_STATUSES.has(short);
 }
@@ -686,6 +831,10 @@ function dateLabel(d: string): string {
 }
 
 export default function Home() {
+  const search = useSearch();
+  const searchParams = new URLSearchParams(search);
+  const urlLeagueId = searchParams.get("league") ? parseInt(searchParams.get("league")!) : null;
+
   const todayFormatted = format(new Date(), "yyyy-MM-dd");
   const { data: dbMatches, isLoading: dbLoading, error: dbError } = useGetMatches({ date: todayFormatted });
   const {
@@ -714,10 +863,18 @@ export default function Home() {
   const apiStatus   = liveData?.apiStatus  ?? "";
 
   // ── Filter state ────────────────────────────────────────────────────────
-  const [selectedLeague, setSelectedLeague] = useState<number | typeof ALL_LEAGUES>(ALL_LEAGUES);
+  const [selectedLeague, setSelectedLeague] = useState<number | typeof ALL_LEAGUES>(
+    urlLeagueId ?? ALL_LEAGUES
+  );
   const [selectedDate, setSelectedDate]     = useState<string | typeof ALL_DATES>(ALL_DATES);
   const [liveOnly, setLiveOnly]             = useState(false);
   const [searchQuery, setSearchQuery]       = useState("");
+
+  // Sync league filter when URL param changes
+  useEffect(() => {
+    if (urlLeagueId) setSelectedLeague(urlLeagueId);
+    else setSelectedLeague(ALL_LEAGUES);
+  }, [urlLeagueId]);
 
   // Unique dates present in the data
   const availableDates = useMemo(() => {
@@ -824,9 +981,11 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Featured sections: Top Bets + Hot Matches */}
+      {/* Featured sections: Favorites + Top Bets + Goal Probability + Hot Matches */}
       <div className="container mx-auto px-4 md:px-6 mt-10 relative z-20">
+        <FavoriteLeaguesSection allMatches={allMatches} />
         <TopBetsSection />
+        <GoalProbabilitySection />
         <HotMatchesSection />
       </div>
 
