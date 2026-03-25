@@ -2076,6 +2076,135 @@ router.get("/rankings/team-cards", (_req, res) => {
   }
 });
 
+// ── accumulator-of-the-day ──────────────────────────────────────────────────────
+const ACCUMULATOR_TTL = 15 * 60 * 1000;
+let accumulatorCache: { data: any; ts: number } | null = null;
+
+function over15Prob(lambdaHome: number, lambdaAway: number): number {
+  const p00 = poissonProb(lambdaHome, 0) * poissonProb(lambdaAway, 0);
+  const p10 = poissonProb(lambdaHome, 1) * poissonProb(lambdaAway, 0);
+  const p01 = poissonProb(lambdaHome, 0) * poissonProb(lambdaAway, 1);
+  return Math.min(0.95, Math.max(0.05, 1 - p00 - p10 - p01));
+}
+
+router.get("/accumulator-of-the-day", async (_req, res) => {
+  try {
+    if (accumulatorCache && Date.now() - accumulatorCache.ts < ACCUMULATOR_TTL) {
+      return res.json({ available: true, ...accumulatorCache.data, cached: true });
+    }
+
+    const { fixtures: prelive } = await getTopLeaguePrelivFromDB(TOP_SIX_LEAGUES);
+
+    if (prelive.length === 0) {
+      return res.json({ available: false, picks: [], combinedOdds: null });
+    }
+
+    type AccumPick = {
+      fixtureId: number;
+      homeTeam: string;
+      awayTeam: string;
+      homeTeamLogo: string;
+      awayTeamLogo: string;
+      league: string;
+      leagueLogo: string;
+      kickoff: string;
+      market: string;
+      marketKey: string;
+      confidence: number;
+      fairOdd: number;
+    };
+
+    const candidates: AccumPick[] = [];
+
+    for (const f of prelive.slice(0, 25)) {
+      if (apiSuspended) break;
+
+      const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
+        apiFetch(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+        apiFetch(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+      ]);
+
+      if (!homeOk || !awayOk) continue;
+
+      const hs = homeData?.response;
+      const as_ = awayData?.response;
+      if (!hs || !as_) continue;
+
+      const hFor     = hs.goals?.for?.average?.home  ?? hs.goals?.for?.average?.total  ?? null;
+      const hAgainst = hs.goals?.against?.average?.home ?? hs.goals?.against?.average?.total ?? null;
+      const aFor     = as_.goals?.for?.average?.away ?? as_.goals?.for?.average?.total  ?? null;
+      const aAgainst = as_.goals?.against?.average?.away ?? as_.goals?.against?.average?.total ?? null;
+
+      if (!hFor || !hAgainst || !aFor || !aAgainst) continue;
+
+      const hAtt = parseFloat(hFor as string);
+      const hDef = parseFloat(hAgainst as string);
+      const aAtt = parseFloat(aFor as string);
+      const aDef = parseFloat(aAgainst as string);
+
+      if (isNaN(hAtt) || isNaN(hDef) || isNaN(aAtt) || isNaN(aDef)) continue;
+
+      const result = calcMatchProbabilities(hAtt, hDef, aAtt, aDef);
+      const p = result.probabilities;
+      const o15 = over15Prob(result.lambdaHome, result.lambdaAway);
+      const dcHome = Math.min(0.95, p.homeWin + p.draw);
+      const dcAway = Math.min(0.95, p.awayWin + p.draw);
+
+      const marketOptions = [
+        { market: "Mais de 1.5 Gols",   marketKey: "over15",  prob: o15 },
+        { market: "Mais de 2.5 Gols",   marketKey: "over25",  prob: p.over25 },
+        { market: "Ambas Marcam",        marketKey: "btts",    prob: p.btts },
+        { market: "Vitória Mandante",    marketKey: "homeWin", prob: p.homeWin },
+        { market: "Dupla Chance 1X",     marketKey: "dcHome",  prob: dcHome },
+        { market: "Dupla Chance X2",     marketKey: "dcAway",  prob: dcAway },
+      ];
+
+      const eligible = marketOptions.filter(m => m.prob >= 0.65).sort((a, b) => b.prob - a.prob);
+      if (eligible.length === 0) continue;
+
+      const best = eligible[0];
+      candidates.push({
+        fixtureId: f.id,
+        homeTeam: f.homeTeam.name,
+        awayTeam: f.awayTeam.name,
+        homeTeamLogo: f.homeTeam.logo,
+        awayTeamLogo: f.awayTeam.logo,
+        league: f.league.name,
+        leagueLogo: f.league.logo,
+        kickoff: f.date,
+        market: best.market,
+        marketKey: best.marketKey,
+        confidence: Math.round(best.prob * 100),
+        fairOdd: parseFloat((1 / best.prob).toFixed(2)),
+      });
+    }
+
+    candidates.sort((a, b) => b.confidence - a.confidence);
+    const seen = new Set<number>();
+    const picks: AccumPick[] = [];
+    for (const c of candidates) {
+      if (!seen.has(c.fixtureId)) {
+        seen.add(c.fixtureId);
+        picks.push(c);
+        if (picks.length === 3) break;
+      }
+    }
+
+    if (picks.length < 2) {
+      return res.json({ available: false, picks: [], combinedOdds: null });
+    }
+
+    const combinedOdds = parseFloat(picks.reduce((acc, pk) => acc * pk.fairOdd, 1).toFixed(2));
+    const data = { picks, combinedOdds, generatedAt: new Date().toISOString() };
+    accumulatorCache = { data, ts: Date.now() };
+
+    return res.json({ available: true, ...data, cached: false });
+  } catch (err: any) {
+    console.error("[accumulator-of-the-day]", err.message);
+    return res.json({ available: false, picks: [], combinedOdds: null });
+  }
+});
+
 // ── api-status ─────────────────────────────────────────────────────────────────
 router.get("/api-status", (_req, res) => {
   res.json({ suspended: apiSuspended, cacheSize: cache.size });

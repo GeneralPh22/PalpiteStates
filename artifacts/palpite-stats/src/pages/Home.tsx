@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { cn, formatProbability } from "@/lib/utils";
 import { MatchInsights } from "@/components/MatchInsights";
+import AccumulatorSection from "@/components/AccumulatorSection";
 import { sortMatchesByLeague } from "@/lib/leaguePriority";
 import { useFavoriteLeagues } from "@/hooks/useFavoriteLeagues";
 import { COUNTRY_LEAGUES } from "@/lib/leagues";
@@ -1003,6 +1004,7 @@ export default function Home() {
       <div className="container mx-auto px-4 md:px-6 mt-10 relative z-20">
         <FavoriteLeaguesSection allMatches={allMatches} />
         <TopBetsSection />
+        <AccumulatorSection />
         <GoalProbabilitySection />
         <HotMatchesSection />
       </div>

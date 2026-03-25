@@ -4,6 +4,12 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 5)
+
+- **AccumulatorSection.tsx**: New component on homepage — "Acumulador do Dia" amber card; auto-selects 3 matches with ≥65% confidence from top leagues; markets: Mais de 1.5 Gols, Mais de 2.5 Gols, Ambas Marcam, Vitória Mandante, Dupla Chance 1X/X2; shows combined odds, fair odds per pick, league + kickoff time; Betano + Betfair affiliate buttons
+- **football-api.ts**: Added `/accumulator-of-the-day` endpoint — Poisson analysis on up to 25 prelive fixtures from TOP_SIX_LEAGUES; new `over15Prob(λh, λa)` helper; 15-minute cache; picks sorted by confidence, top 3 unique matches returned; endpoint validates ≥2 picks before returning
+- **Home.tsx**: Imported and placed `<AccumulatorSection />` between TopBetsSection and GoalProbabilitySection
+
 ## Recent Changes (Session 4)
 
 - **leagues.ts**: Added "Internacional" section at top with UEFA Nations League (5), Euro Championship (4), FIFA World Cup (1), World Cup Quals (31/35), Copa Libertadores (13), Copa Sudamericana (11), UCL (2), UEL (3), Conference League (848)
