@@ -4,6 +4,13 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 6)
+
+- **CornerScannerSection.tsx**: New homepage section "Alta Probabilidade de Escanteios" — sky/blue theme; 3-column grid; shows home avg + away avg + total, Over 8.5/9.5 progress bars; refresh button; hides when no data
+- **CardScannerSection.tsx**: New homepage section "Alta Probabilidade de Cartões" — red theme; same card layout; shows avg cards per team + combined total, Over 3.5/4.5 probability bars
+- **football-api.ts**: Added `/scanner/corners` and `/scanner/cards` endpoints; 20 min result cache; corners uses 3-step data strategy: (1) per-team 24h in-memory cache, (2) scan existing in-memory fixture stats (zero-cost), (3) fetch last 5 fixtures + their stats as fallback; cards uses `/teams/statistics` card data; `poissonCDF` helper for probability computation; `cornersTeamCache` Map persists between requests for 24h
+- **Home.tsx**: Added `CornerScannerSection` and `CardScannerSection` after `HotMatchesSection`
+
 ## Recent Changes (Session 5)
 
 - **AccumulatorSection.tsx**: New component on homepage — "Acumulador do Dia" amber card; auto-selects 3 matches with ≥65% confidence from top leagues; markets: Mais de 1.5 Gols, Mais de 2.5 Gols, Ambas Marcam, Vitória Mandante, Dupla Chance 1X/X2; shows combined odds, fair odds per pick, league + kickoff time; Betano + Betfair affiliate buttons

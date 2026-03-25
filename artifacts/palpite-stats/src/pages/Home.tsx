@@ -28,6 +28,8 @@ import {
 import { cn, formatProbability } from "@/lib/utils";
 import { MatchInsights } from "@/components/MatchInsights";
 import AccumulatorSection from "@/components/AccumulatorSection";
+import CornerScannerSection from "@/components/CornerScannerSection";
+import CardScannerSection from "@/components/CardScannerSection";
 import { sortMatchesByLeague } from "@/lib/leaguePriority";
 import { useFavoriteLeagues } from "@/hooks/useFavoriteLeagues";
 import { COUNTRY_LEAGUES } from "@/lib/leagues";
@@ -1007,6 +1009,8 @@ export default function Home() {
         <AccumulatorSection />
         <GoalProbabilitySection />
         <HotMatchesSection />
+        <CornerScannerSection />
+        <CardScannerSection />
       </div>
 
       {/* Matches section */}
