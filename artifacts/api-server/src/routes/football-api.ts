@@ -4,6 +4,7 @@ import {
   saveFixturesToDB,
   isDBFresh,
   getTopLeaguePrelivFromDB,
+  getScannerFixtures,
   type CachedFixture,
 } from "../lib/fixture-db.js";
 
@@ -25,6 +26,26 @@ const TOP_LEAGUES = [
 // The 6 main leagues always guaranteed in pre-live section
 const TOP_SIX_LEAGUES = [39, 140, 78, 61, 135, 71];
 
+// Expanded league list for the statistics scanner — main + northern European + Iberian + Benelux
+const SCANNER_LEAGUES = [
+  // Main six
+  39, 140, 78, 61, 135, 71,
+  // Portugal: Primeira Liga + Liga Portugal 2
+  94, 95,
+  // Netherlands: Eredivisie + Eerste Divisie
+  88, 89,
+  // Scotland: Premiership + Championship
+  179, 181,
+  // Norway: Eliteserien + Division 1
+  103, 104,
+  // Sweden: Allsvenskan + Superettan
+  113, 114,
+  // Denmark: Superliga + Division 1
+  119, 120,
+  // UCL / UEL / UECL
+  2, 3, 848,
+];
+
 const cache = new Map<string, { data: unknown; ts: number }>();
 const ODDS_TTL = 5 * 60 * 1000;       // 5 minutes
 const STATS_TTL = 10 * 60 * 1000;     // 10 minutes
@@ -37,6 +58,25 @@ const FORM_TTL  =  6 * 60 * 60 * 1000;   //  6 hours   – player performance st
 let apiSuspended = false;
 const SUSPENDED_CACHE_TTL = 5 * 60 * 1000;
 let lastSuspendedCheck = 0;
+
+// ── Scanner call throttle ─────────────────────────────────────────────────────
+// Limits scanner API bursts to ≤30 calls per run; resets between scans
+let scannerCallBudget = 0;
+const SCANNER_CALL_BUDGET = 60;
+function scannerBudgetAvailable(): boolean { return scannerCallBudget > 0; }
+function useScannerBudget(): void { scannerCallBudget = Math.max(0, scannerCallBudget - 1); }
+function resetScannerBudget(): void { scannerCallBudget = SCANNER_CALL_BUDGET; }
+
+/** Throttled apiFetch for scanner use only — respects scannerCallBudget */
+async function scannerApiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok: boolean; stale?: boolean }> {
+  // Always serve from cache if fresh
+  const cached = (cache as any).get(path);
+  if (cached && Date.now() - cached.ts < ttl) return { data: cached.data, ok: true };
+  // Only allow fresh API calls within budget
+  if (!scannerBudgetAvailable()) return { data: cached?.data ?? null, ok: !!cached?.data };
+  useScannerBudget();
+  return apiFetch(path, ttl);
+}
 
 const LIVE_TTL = 30 * 1000;            // 30 seconds (for live matches)
 
@@ -2256,15 +2296,14 @@ async function fetchTeamCornerAvg(teamId: number): Promise<{ avg: number; played
     return { avg, played: count };
   }
 
-  // 2. Fall back: fetch last 5 completed fixtures for this team
-  if (apiSuspended) return null;
-  const { data: fixData, ok: fixOk } = await apiFetch(`/fixtures?team=${teamId}&last=5&season=2025`, CORNER_HIST_TTL);
+  // 2. Fall back: fetch last 5 completed fixtures for this team (budget-limited)
+  const { data: fixData, ok: fixOk } = await scannerApiFetch(`/fixtures?team=${teamId}&last=5&season=2025`, CORNER_HIST_TTL);
   if (!fixOk || !Array.isArray(fixData?.response)) return null;
 
   for (const fix of (fixData.response as any[]).slice(0, 5)) {
     const fId = fix.fixture?.id;
-    if (!fId || apiSuspended) continue;
-    const { data: sData, ok: sOk } = await apiFetch(`/fixtures/statistics?fixture=${fId}`, CORNER_HIST_TTL);
+    if (!fId) continue;
+    const { data: sData, ok: sOk } = await scannerApiFetch(`/fixtures/statistics?fixture=${fId}`, CORNER_HIST_TTL);
     if (!sOk || !Array.isArray(sData?.response)) continue;
     for (const ts of sData.response as any[]) {
       if (ts.team?.id !== teamId) continue;
@@ -2283,9 +2322,21 @@ async function fetchTeamCornerAvg(teamId: number): Promise<{ avg: number; played
 }
 
 /** Get a team's average cards per match from /teams/statistics. */
+const cardsTeamCache = new Map<string, { avg: number; played: number; ts: number }>();
+const CARD_HIST_TTL = 24 * 60 * 60 * 1000;
+
 async function fetchTeamCardAvg(teamId: number, leagueId: number): Promise<{ avg: number; played: number } | null> {
-  const { data, ok } = await apiFetch(`/teams/statistics?team=${teamId}&league=${leagueId}&season=2025`, STATS_TTL);
-  if (!ok || !data?.response) return null;
+  const cacheKey = `${teamId}-${leagueId}`;
+  const cached = cardsTeamCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CARD_HIST_TTL) {
+    return { avg: cached.avg, played: cached.played };
+  }
+
+  const { data, ok } = await scannerApiFetch(`/teams/statistics?team=${teamId}&league=${leagueId}&season=2025`, STATS_TTL);
+  if (!ok || !data?.response) {
+    if (cached) return { avg: cached.avg, played: cached.played };
+    return null;
+  }
   const r = data.response;
   const played: number = r.fixtures?.played?.total ?? 0;
   if (!played) return null;
@@ -2296,18 +2347,30 @@ async function fetchTeamCardAvg(teamId: number, leagueId: number): Promise<{ avg
   for (const p of Object.values(r.cards?.red ?? {}) as any[]) red += p?.total ?? 0;
 
   const avg = +((yellow + red) / played).toFixed(2);
+  cardsTeamCache.set(cacheKey, { avg, played, ts: Date.now() });
   return { avg, played };
 }
 
 // ── GET /scanner/corners ───────────────────────────────────────────────────────
+// Confidence threshold: Over 9.5 >= 60% to be a "strong pick"
+const CORNER_CONFIDENCE_THRESHOLD = 60;
+
 router.get("/scanner/corners", async (_req, res) => {
   try {
     if (cornerScannerCache && Date.now() - cornerScannerCache.ts < SCANNER_TTL) {
       return res.json({ available: true, ...cornerScannerCache.data, cached: true });
     }
 
-    const { fixtures: prelive } = await getTopLeaguePrelivFromDB(TOP_SIX_LEAGUES);
-    if (prelive.length === 0) return res.json({ available: false, matches: [] });
+    resetScannerBudget(); // allow up to SCANNER_CALL_BUDGET fresh API calls per scan
+
+    // Use expanded scanner leagues — prioritized but falls back to all NS fixtures
+    const prelive = await getScannerFixtures(SCANNER_LEAGUES, 80);
+    if (prelive.length === 0) {
+      return res.json({
+        available: false, matches: [], isFallback: false,
+        fallbackMessage: "Nenhuma oportunidade de alta confiança encontrada hoje. A IA continua monitorando os jogos.",
+      });
+    }
 
     type CornerMatch = {
       fixtureId: number;
@@ -2318,62 +2381,89 @@ router.get("/scanner/corners", async (_req, res) => {
       over85Pct: number; over95Pct: number;
     };
 
-    const results: CornerMatch[] = [];
+    const candidates: CornerMatch[] = [];
+    // Only scan the top priority fixtures to avoid bursting the rate limit
+    const scanBatch = prelive.slice(0, 25);
 
-    for (const f of prelive.slice(0, 30)) {
-      if (apiSuspended) break;
-
+    for (const f of scanBatch) {
       const [homeCorner, awayCorner] = await Promise.all([
         fetchTeamCornerAvg(f.homeTeam.id),
         fetchTeamCornerAvg(f.awayTeam.id),
       ]);
+      // Small delay between fixtures to stay under API rate limit
+      await new Promise(r => setTimeout(r, 80));
 
       if (!homeCorner || !awayCorner) continue;
 
       const totalAvg = +(homeCorner.avg + awayCorner.avg).toFixed(1);
-      if (totalAvg < 6) continue; // skip very low-corner matches
+      if (totalAvg < 5) continue; // discard negligible-corner matches
 
       const over85 = Math.round((1 - poissonCDF(totalAvg, 8)) * 100);
       const over95 = Math.round((1 - poissonCDF(totalAvg, 9)) * 100);
 
-      results.push({
+      candidates.push({
         fixtureId: f.id,
-        homeTeam: f.homeTeam.name,
-        awayTeam: f.awayTeam.name,
-        homeTeamLogo: f.homeTeam.logo,
-        awayTeamLogo: f.awayTeam.logo,
-        league: f.league.name,
-        leagueLogo: f.league.logo,
+        homeTeam: f.homeTeam.name, awayTeam: f.awayTeam.name,
+        homeTeamLogo: f.homeTeam.logo, awayTeamLogo: f.awayTeam.logo,
+        league: f.league.name, leagueLogo: f.league.logo,
         kickoff: f.date,
-        homeAvg: homeCorner.avg,
-        awayAvg: awayCorner.avg,
-        totalAvg,
-        over85Pct: over85,
-        over95Pct: over95,
+        homeAvg: homeCorner.avg, awayAvg: awayCorner.avg,
+        totalAvg, over85Pct: over85, over95Pct: over95,
       });
     }
 
-    results.sort((a, b) => b.over95Pct - a.over95Pct);
-    const top5 = results.slice(0, 5);
+    candidates.sort((a, b) => b.over95Pct - a.over95Pct);
 
-    const data = { matches: top5, scannedAt: new Date().toISOString() };
+    // Strong picks: meet the confidence threshold
+    const strongPicks = candidates.filter(m => m.over95Pct >= CORNER_CONFIDENCE_THRESHOLD).slice(0, 5);
+
+    let matches: CornerMatch[];
+    let isFallback = false;
+
+    if (strongPicks.length > 0) {
+      matches = strongPicks;
+    } else if (candidates.length > 0) {
+      // Intelligent fallback: top 3 by statistical score, no confidence label
+      matches = candidates.slice(0, 3);
+      isFallback = true;
+    } else {
+      // Don't cache empty results — let next request retry when API recovers
+      return res.json({
+        available: false, matches: [], isFallback: false,
+        fallbackMessage: "Nenhuma oportunidade de alta confiança encontrada hoje. A IA continua monitorando os jogos.",
+        scannedAt: new Date().toISOString(),
+        cached: false,
+      });
+    }
+
+    const data = { matches, isFallback, scannedAt: new Date().toISOString() };
     cornerScannerCache = { data, ts: Date.now() };
-    return res.json({ available: top5.length > 0, ...data, cached: false });
+    return res.json({ available: true, ...data, cached: false });
   } catch (err: any) {
     console.error("[scanner/corners]", err.message);
-    return res.json({ available: false, matches: [] });
+    return res.json({ available: false, matches: [], isFallback: false });
   }
 });
 
 // ── GET /scanner/cards ─────────────────────────────────────────────────────────
+// Confidence threshold: Over 4.5 >= 50% to be a "strong pick"
+const CARD_CONFIDENCE_THRESHOLD = 50;
+
 router.get("/scanner/cards", async (_req, res) => {
   try {
     if (cardScannerCache && Date.now() - cardScannerCache.ts < SCANNER_TTL) {
       return res.json({ available: true, ...cardScannerCache.data, cached: true });
     }
 
-    const { fixtures: prelive } = await getTopLeaguePrelivFromDB(TOP_SIX_LEAGUES);
-    if (prelive.length === 0) return res.json({ available: false, matches: [] });
+    resetScannerBudget(); // allow up to SCANNER_CALL_BUDGET fresh API calls per scan
+
+    const prelive = await getScannerFixtures(SCANNER_LEAGUES, 80);
+    if (prelive.length === 0) {
+      return res.json({
+        available: false, matches: [], isFallback: false,
+        fallbackMessage: "Nenhuma oportunidade de alta confiança encontrada hoje. A IA continua monitorando os jogos.",
+      });
+    }
 
     type CardMatch = {
       fixtureId: number;
@@ -2384,50 +2474,65 @@ router.get("/scanner/cards", async (_req, res) => {
       over35Pct: number; over45Pct: number;
     };
 
-    const results: CardMatch[] = [];
+    const candidates: CardMatch[] = [];
+    // Only scan the top priority fixtures to avoid bursting the rate limit
+    const scanBatch = prelive.slice(0, 25);
 
-    for (const f of prelive.slice(0, 30)) {
-      if (apiSuspended) break;
-
+    for (const f of scanBatch) {
       const [homeCards, awayCards] = await Promise.all([
         fetchTeamCardAvg(f.homeTeam.id, f.league.id),
         fetchTeamCardAvg(f.awayTeam.id, f.league.id),
       ]);
+      // Small delay between fixtures to stay under API rate limit
+      await new Promise(r => setTimeout(r, 80));
 
       if (!homeCards || !awayCards) continue;
 
       const totalAvg = +(homeCards.avg + awayCards.avg).toFixed(2);
-      if (totalAvg < 2) continue;
+      if (totalAvg < 1.5) continue;
 
       const over35 = Math.round((1 - poissonCDF(totalAvg, 3)) * 100);
       const over45 = Math.round((1 - poissonCDF(totalAvg, 4)) * 100);
 
-      results.push({
+      candidates.push({
         fixtureId: f.id,
-        homeTeam: f.homeTeam.name,
-        awayTeam: f.awayTeam.name,
-        homeTeamLogo: f.homeTeam.logo,
-        awayTeamLogo: f.awayTeam.logo,
-        league: f.league.name,
-        leagueLogo: f.league.logo,
+        homeTeam: f.homeTeam.name, awayTeam: f.awayTeam.name,
+        homeTeamLogo: f.homeTeam.logo, awayTeamLogo: f.awayTeam.logo,
+        league: f.league.name, leagueLogo: f.league.logo,
         kickoff: f.date,
-        homeAvg: homeCards.avg,
-        awayAvg: awayCards.avg,
-        totalAvg,
-        over35Pct: over35,
-        over45Pct: over45,
+        homeAvg: homeCards.avg, awayAvg: awayCards.avg,
+        totalAvg, over35Pct: over35, over45Pct: over45,
       });
     }
 
-    results.sort((a, b) => b.over45Pct - a.over45Pct);
-    const top5 = results.slice(0, 5);
+    candidates.sort((a, b) => b.over45Pct - a.over45Pct);
 
-    const data = { matches: top5, scannedAt: new Date().toISOString() };
+    const strongPicks = candidates.filter(m => m.over45Pct >= CARD_CONFIDENCE_THRESHOLD).slice(0, 5);
+
+    let matches: CardMatch[];
+    let isFallback = false;
+
+    if (strongPicks.length > 0) {
+      matches = strongPicks;
+    } else if (candidates.length > 0) {
+      matches = candidates.slice(0, 3);
+      isFallback = true;
+    } else {
+      // Don't cache empty results — let next request retry when API recovers
+      return res.json({
+        available: false, matches: [], isFallback: false,
+        fallbackMessage: "Nenhuma oportunidade de alta confiança encontrada hoje. A IA continua monitorando os jogos.",
+        scannedAt: new Date().toISOString(),
+        cached: false,
+      });
+    }
+
+    const data = { matches, isFallback, scannedAt: new Date().toISOString() };
     cardScannerCache = { data, ts: Date.now() };
-    return res.json({ available: top5.length > 0, ...data, cached: false });
+    return res.json({ available: true, ...data, cached: false });
   } catch (err: any) {
     console.error("[scanner/cards]", err.message);
-    return res.json({ available: false, matches: [] });
+    return res.json({ available: false, matches: [], isFallback: false });
   }
 });
 

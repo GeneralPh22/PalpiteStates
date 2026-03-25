@@ -213,6 +213,35 @@ export async function getTopLeaguePrelivFromDB(leagueIds: number[]): Promise<{
   }
 }
 
+/**
+ * Get upcoming NS fixtures for the scanner — prioritizes specified leagues but
+ * falls back to ALL leagues in the DB so the scanner always finds matches.
+ * Covers the next 48 hours, ordered priority leagues first then by date.
+ */
+export async function getScannerFixtures(
+  priorityLeagueIds: number[],
+  limit: number = 80,
+): Promise<CachedFixture[]> {
+  try {
+    const pool = getPool();
+    const result = await pool.query(
+      `SELECT *,
+         CASE WHEN league_id = ANY($1::int[]) THEN 0 ELSE 1 END AS _priority
+       FROM fixtures_cache
+       WHERE status_short = 'NS'
+         AND match_date >= NOW()
+         AND match_date <= NOW() + INTERVAL '48 hours'
+       ORDER BY _priority ASC, match_date ASC
+       LIMIT $2`,
+      [priorityLeagueIds, limit],
+    );
+    return result.rows.map(rowToFixture);
+  } catch (err: any) {
+    console.error("[fixture-db] getScannerFixtures error:", err.message);
+    return [];
+  }
+}
+
 // ── Staleness ────────────────────────────────────────────────────────────────
 
 const FIXTURE_FRESH_MS = 10 * 60 * 1000; // 10 minutes

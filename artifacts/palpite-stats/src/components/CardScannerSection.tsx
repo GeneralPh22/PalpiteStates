@@ -22,6 +22,8 @@ interface CardMatch {
 interface ScannerData {
   available: boolean;
   matches: CardMatch[];
+  isFallback?: boolean;
+  fallbackMessage?: string;
   scannedAt?: string;
   cached?: boolean;
 }
@@ -126,7 +128,28 @@ export default function CardScannerSection() {
     );
   }
 
-  if (isError || !data?.available || !data.matches?.length) return null;
+  // Hard unavailable (no fixtures at all)
+  if (isError || (!data?.available && !data?.isFallback && !data?.matches?.length)) {
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-8">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-7 h-7 rounded-lg bg-red-500/20 flex items-center justify-center">
+            <Square className="w-3.5 h-3.5 text-red-400 fill-red-400/30" />
+          </div>
+          <h2 className="text-base font-bold text-white">Alta Probabilidade de Cartões</h2>
+        </div>
+        <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-5 text-center">
+          <p className="text-sm text-white/40">
+            {data?.fallbackMessage ?? "Nenhuma oportunidade de alta confiança encontrada hoje. A IA continua monitorando os jogos."}
+          </p>
+        </div>
+      </motion.div>
+    );
+  }
+
+  if (!data?.matches?.length) return null;
+
+  const isFallback = data.isFallback ?? false;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-8">
@@ -136,9 +159,15 @@ export default function CardScannerSection() {
             <Square className="w-3.5 h-3.5 text-red-400 fill-red-400/30" />
           </div>
           <h2 className="text-base font-bold text-white">Alta Probabilidade de Cartões</h2>
-          <span className="text-[10px] bg-red-500/15 text-red-400 border border-red-500/20 rounded-full px-2 py-0.5 font-medium">
-            Top {data.matches.length} jogos
-          </span>
+          {isFallback ? (
+            <span className="text-[10px] bg-white/[0.06] text-white/40 border border-white/10 rounded-full px-2 py-0.5 font-medium">
+              Melhores estatísticas do dia
+            </span>
+          ) : (
+            <span className="text-[10px] bg-red-500/15 text-red-400 border border-red-500/20 rounded-full px-2 py-0.5 font-medium">
+              Top {data.matches.length} jogos
+            </span>
+          )}
         </div>
         <button
           onClick={() => refetch()}
@@ -148,6 +177,12 @@ export default function CardScannerSection() {
           <RefreshCw className={`w-3.5 h-3.5 text-white/40 ${isFetching ? "animate-spin" : ""}`} />
         </button>
       </div>
+
+      {isFallback && (
+        <div className="mb-3 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.06] text-[11px] text-white/35">
+          Nenhuma oportunidade de alta confiança encontrada hoje. A IA continua monitorando os jogos.
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {data.matches.map((match, i) => (
