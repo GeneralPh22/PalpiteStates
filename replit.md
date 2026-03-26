@@ -4,6 +4,20 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 8 — Performance & Live Engine)
+
+- **lib/live-engine.ts** (NEW): Live Match Engine with two background workers — Worker 2 polls `fixtures?live=all` every 60s; Worker 3 re-fetches per-match statistics every 90s. Stores live fixture data + full team stats (shots, shotsOnTarget, possession, corners, fouls, yellowCards, redCards). Exported: `startLiveEngine()`, `getLiveMatches()`, `getLiveStats()`, `getLiveCount()`
+- **lib/cache-manager.ts** (NEW): Centralized `CacheManager` class with named TTL tiers (LIVE 60s, FIXTURES 10min, ODDS 5min, TEAMS 6h, LEAGUES 6h, PLAYERS 12h, SQUAD 24h). Singleton `cacheManager` exported.
+- **football-api.ts**: Updated TTLs to spec (FIXTURE_LIST_TTL 10min, FORM_TTL 12h, added LEAGUES_TTL 6h + TEAMS_TTL 6h); imports + starts live engine; added `GET /api/live/matches` and `GET /api/live/stats/:fixtureId` endpoints; `liveCount` field in api-status response
+- **LiveMatchesSection.tsx** (NEW): Real-time live match display — pulsing "Ao Vivo" badge, match cards with score + elapsed minute, tap-to-expand stats panel (possession bar, 7 stat types). Polls every 60s. Returns null when no live matches (doesn't clutter UI).
+- **Home.tsx**: LiveMatchesSection added as Step 1 (topmost priority); scanner sections (CornerScanner, CardScanner, OpportunityScanner) converted to `React.lazy()` code-split with `Suspense` fallback skeleton; loading order: Live → Favorites → Picks → Stats → Scanners
+
+## Recent Changes (Session 7 — AI Opportunity Scanner)
+
+- **OpportunityScannerSection.tsx** (NEW): Purple/violet scanner — composite confidence score combining Over 2.5 Goals (40%), BTTS (40%), Attack Index (20%); circular confidence ring; three factor badges per match; top 5 picks with ≥70% threshold, graceful fallback to best 5 if none qualify
+- **football-api.ts**: Added `teamGoalsCache` + `fetchTeamGoalAvg()` (24h cache); added `/api/scanner/opportunities` endpoint with Poisson math; 20-min result cache; 60-call budget
+- **Home.tsx**: Added `OpportunityScannerSection` after CardScannerSection
+
 ## Recent Changes (Session 6)
 
 - **CornerScannerSection.tsx**: New homepage section "Alta Probabilidade de Escanteios" — sky/blue theme; 3-column grid; shows home avg + away avg + total, Over 8.5/9.5 progress bars; refresh button; hides when no data

@@ -3,7 +3,7 @@ import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
 import { Link, useSearch } from "wouter";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, lazy, Suspense } from "react";
 import {
   Activity,
   ChevronRight,
@@ -28,12 +28,15 @@ import {
 import { cn, formatProbability } from "@/lib/utils";
 import { MatchInsights } from "@/components/MatchInsights";
 import AccumulatorSection from "@/components/AccumulatorSection";
-import CornerScannerSection from "@/components/CornerScannerSection";
-import CardScannerSection from "@/components/CardScannerSection";
-import OpportunityScannerSection from "@/components/OpportunityScannerSection";
+import LiveMatchesSection from "@/components/LiveMatchesSection";
 import { sortMatchesByLeague } from "@/lib/leaguePriority";
 import { useFavoriteLeagues } from "@/hooks/useFavoriteLeagues";
 import { COUNTRY_LEAGUES } from "@/lib/leagues";
+
+// Lazy-loaded scanner sections — code-split, deferred until after main content
+const CornerScannerSection      = lazy(() => import("@/components/CornerScannerSection"));
+const CardScannerSection        = lazy(() => import("@/components/CardScannerSection"));
+const OpportunityScannerSection = lazy(() => import("@/components/OpportunityScannerSection"));
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -1005,14 +1008,28 @@ export default function Home() {
 
       {/* Featured sections: Favorites + Top Bets + Goal Probability + Hot Matches */}
       <div className="container mx-auto px-4 md:px-6 mt-10 relative z-20">
+        {/* Step 1 — Live data (highest priority, polls every 60 s) */}
+        <LiveMatchesSection />
+
+        {/* Step 2 — Favorite leagues + curated picks */}
         <FavoriteLeaguesSection allMatches={allMatches} />
         <TopBetsSection />
         <AccumulatorSection />
+
+        {/* Step 3 — Statistics & goal analysis */}
         <GoalProbabilitySection />
         <HotMatchesSection />
-        <CornerScannerSection />
-        <CardScannerSection />
-        <OpportunityScannerSection />
+
+        {/* Step 4 — Advanced scanners (lazy-loaded / code-split) */}
+        <Suspense fallback={<div className="h-32 rounded-xl bg-white/[0.02] animate-pulse mb-6" />}>
+          <CornerScannerSection />
+        </Suspense>
+        <Suspense fallback={<div className="h-32 rounded-xl bg-white/[0.02] animate-pulse mb-6" />}>
+          <CardScannerSection />
+        </Suspense>
+        <Suspense fallback={<div className="h-32 rounded-xl bg-white/[0.02] animate-pulse mb-6" />}>
+          <OpportunityScannerSection />
+        </Suspense>
       </div>
 
       {/* Matches section */}

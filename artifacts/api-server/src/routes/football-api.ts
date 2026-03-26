@@ -7,6 +7,16 @@ import {
   getScannerFixtures,
   type CachedFixture,
 } from "../lib/fixture-db.js";
+import {
+  startLiveEngine,
+  updateFromApiResponse,
+  getLiveMatches,
+  getLiveStats,
+  getLiveCount,
+  type LiveFixture,
+  type LiveMatchStats,
+} from "../lib/live-engine.js";
+import { cacheManager } from "../lib/cache-manager.js";
 
 const router: IRouter = Router();
 
@@ -47,13 +57,15 @@ const SCANNER_LEAGUES = [
 ];
 
 const cache = new Map<string, { data: unknown; ts: number }>();
-const ODDS_TTL = 5 * 60 * 1000;       // 5 minutes
-const STATS_TTL = 10 * 60 * 1000;     // 10 minutes
-const MATCH_TTL = 2 * 60 * 1000;      // 2 minutes
-const FIXTURE_LIST_TTL = 5 * 60 * 1000;  //  5 minutes – homepage fixture lists
-const PRELIVE_TTL = 60 * 1000;           // 60 seconds – pre-live fixtures (in-memory dedup)
-const SQUAD_TTL = 24 * 60 * 60 * 1000;   // 24 hours  – squad roster
-const FORM_TTL  =  6 * 60 * 60 * 1000;   //  6 hours   – player performance stats
+const ODDS_TTL         =  5 * 60 * 1000;       //  5 min  — odds
+const STATS_TTL        = 10 * 60 * 1000;       // 10 min  — pre-match statistics
+const MATCH_TTL        =  2 * 60 * 1000;       //  2 min  — match payload (fallback default)
+const FIXTURE_LIST_TTL = 10 * 60 * 1000;       // 10 min  — today's fixture lists (spec)
+const PRELIVE_TTL      = 60 * 1000;            // 60 s    — pre-live fixtures (in-memory dedup)
+const SQUAD_TTL        = 24 * 60 * 60 * 1000;  // 24 h    — squad rosters
+const FORM_TTL         = 12 * 60 * 60 * 1000;  // 12 h    — player performance stats (spec)
+const LEAGUES_TTL      =  6 * 60 * 60 * 1000;  //  6 h    — league data (spec)
+const TEAMS_TTL        =  6 * 60 * 60 * 1000;  //  6 h    — team data (spec)
 
 let apiSuspended = false;
 const SUSPENDED_CACHE_TTL = 5 * 60 * 1000;
@@ -412,6 +424,9 @@ function scheduleBackgroundRefresh() {
 
 scheduleBackgroundRefresh();
 
+// ── Live Match Engine ── Worker 2 (60 s) + Worker 3 (90 s) ────────────────────
+startLiveEngine();
+
 // ── Pre-live top-league refresh ────────────────────────────────────────────
 // Runs on startup (after 8s to avoid racing with bg refresh) then every 6h.
 // Fetches upcoming NS fixtures for the 6 main leagues so they're always in DB.
@@ -681,7 +696,12 @@ async function refreshLiveMatches() {
     const { data, ok } = await apiFetch("/fixtures?live=all", LIVE_TTL);
     if (ok && data && (data.results ?? 0) > 0) {
       await saveFixturesToDB(data.response ?? []);
+      // Feed live data into the in-memory engine (stats + clean API store)
+      updateFromApiResponse(data.response ?? []);
       console.log(`[live-refresh] Updated ${data.results} live fixtures`);
+    } else if (ok && data && data.results === 0) {
+      // No live matches — clear the live engine store
+      updateFromApiResponse([]);
     }
   } catch (err: any) {
     console.error("[live-refresh] Error:", err.message);
@@ -2664,9 +2684,37 @@ router.get("/scanner/opportunities", async (_req, res) => {
   }
 });
 
+// ── GET /live/matches ─────────────────────────────────────────────────────────
+// Returns all currently live fixtures with scores + stats (from live engine).
+router.get("/live/matches", (_req, res) => {
+  const matches = getLiveMatches();
+  if (matches.length === 0) {
+    return res.json({ available: false, count: 0, matches: [] });
+  }
+  // Attach stats snapshot to each match
+  const enriched = matches.map(m => ({
+    ...m,
+    stats: getLiveStats(m.fixtureId) ?? null,
+  }));
+  return res.json({ available: true, count: enriched.length, matches: enriched });
+});
+
+// ── GET /live/stats/:fixtureId ────────────────────────────────────────────────
+// Returns per-fixture stats for both teams (7 stat types each).
+router.get("/live/stats/:fixtureId", (req, res) => {
+  const id = parseInt(req.params.fixtureId ?? "", 10);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid fixture id" });
+  const stats = getLiveStats(id);
+  if (!stats) {
+    return res.json({ available: false, fixtureId: id,
+      message: "Stats not yet available — retry in 30 seconds" });
+  }
+  return res.json({ available: true, ...stats });
+});
+
 // ── api-status ─────────────────────────────────────────────────────────────────
 router.get("/api-status", (_req, res) => {
-  res.json({ suspended: apiSuspended, cacheSize: cache.size });
+  res.json({ suspended: apiSuspended, cacheSize: cache.size, liveCount: getLiveCount() });
 });
 
 export default router;
