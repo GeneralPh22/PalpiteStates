@@ -55,6 +55,8 @@ interface AnalysisData {
   homeStats: TeamStats | null;
   awayStats: TeamStats | null;
   bestBet: BestBet | null;
+  marketRating?: string;
+  insight?: string;
   reasons: string[];
   formInsight: string;
 }
@@ -329,33 +331,49 @@ export function MatchInsights({ fixtureId, homeTeamId, awayTeamId, leagueId, hom
                     </div>
                   </div>
 
-                  {/* ── 5. BEST BET ── */}
+                  {/* ── 5. AI PREDICTION ── */}
                   {analysis.bestBet && (
                     <div className="pt-1 border-t border-white/[0.04] space-y-2">
                       <div className="flex items-center gap-1.5">
                         <Zap className="w-3 h-3 text-amber-400" />
-                        <span className="text-[9px] text-amber-400 uppercase tracking-widest font-bold">Best Bet</span>
+                        <span className="text-[9px] text-amber-400 uppercase tracking-widest font-bold">Previsão IA</span>
                       </div>
-                      <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 p-3 space-y-2">
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="text-sm font-bold text-white leading-tight">{analysis.bestBet.market}</span>
-                          <ConfidenceBadge level={analysis.bestBet.confidence} />
+                      <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] overflow-hidden">
+                        {/* Prediction row */}
+                        <div className="flex items-center justify-between px-3 py-2 border-b border-amber-500/10">
+                          <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-semibold">Previsão</span>
+                          <span className="text-sm font-bold text-white">{analysis.bestBet.market}</span>
                         </div>
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px] text-zinc-500 font-medium">Probability:</span>
-                          <span className="text-[10px] font-bold text-amber-400">{analysis.bestBet.probability}%</span>
+                        {/* Probability row */}
+                        <div className="flex items-center justify-between px-3 py-2 border-b border-amber-500/10">
+                          <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-semibold">Probabilidade</span>
+                          <span className="text-lg font-black text-amber-400 tabular-nums">{analysis.bestBet.probability}%</span>
                         </div>
-                        {/* ── Quick Reasons ── */}
-                        {analysis.reasons.length > 0 && (
-                          <ul className="space-y-0.5 pt-1 border-t border-white/[0.05]">
-                            {analysis.reasons.map((r, i) => (
-                              <li key={i} className="text-[10px] text-zinc-500 flex items-start gap-1.5">
-                                <span className="text-amber-500/60 flex-shrink-0 mt-px">•</span>
-                                {r}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
+                        {/* Market Rating row */}
+                        <div className="flex items-center justify-between px-3 py-2 border-b border-amber-500/10">
+                          <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-semibold">Avaliação</span>
+                          <span className={cn(
+                            "text-[10px] font-bold px-2 py-0.5 rounded-full border",
+                            analysis.bestBet.confidence === "High"
+                              ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                              : analysis.bestBet.confidence === "Medium"
+                                ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                                : "text-zinc-400 bg-white/[0.05] border-white/[0.10]"
+                          )}>
+                            {analysis.marketRating ?? (
+                              analysis.bestBet.confidence === "High" ? "Boa Oportunidade"
+                              : analysis.bestBet.confidence === "Medium" ? "Oportunidade Razoável"
+                              : "Alto Risco"
+                            )}
+                          </span>
+                        </div>
+                        {/* Insight row */}
+                        <div className="px-3 py-2">
+                          <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-semibold block mb-1">Insight</span>
+                          <p className="text-[11px] text-zinc-300 leading-relaxed">
+                            {analysis.insight ?? analysis.formInsight ?? "Análise baseada em dados estatísticos reais."}
+                          </p>
+                        </div>
                       </div>
                       {/* ── Affiliate buttons ── */}
                       <div className="grid grid-cols-2 gap-2 pt-0.5">

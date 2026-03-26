@@ -4,6 +4,14 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 9 — League Expansion + AI Prediction Card)
+
+- **football-api.ts**: `TOP_LEAGUES` expanded to include all tier-2 domestic leagues (40 Championship, 141 La Liga 2, 79 2.Bundesliga, 136 Serie B Italy, 62 Ligue 2, 72 Série B Brazil) + Copa America (9), Copa Libertadores (13), Copa Sudamericana (11); `TOP_SIX_LEAGUES` expanded to 15 leagues covering tier-1, tier-2, and European cups; `SCANNER_LEAGUES` expanded to add all second-tier + South American cups (13, 11, 9, 73) + WC Qualifiers (31, 35); Copa do Brasil (73) added to SCANNER_LEAGUES
+- **football-api.ts** `/fixture/:id/analysis`: Added `marketRating` field (Excelente Oportunidade ≥75%, Boa Oportunidade 65-75%, Oportunidade Razoável 55-65%, Alto Risco <55%) and `insight` field (natural language summary from stats data)
+- **leagues.ts**: Internacional section reordered (UCL/UEL/UECL first), Copa America (9) added, International Friendlies/Amistosos (667) added; Brazil section now includes Copa do Brasil (73)
+- **leaguePriority.ts**: Fixed Copa do Brasil ID (66→73); added Copa Libertadores (13, pri 10), Copa Sudamericana (11, pri 11), Copa America (9, pri 12); added all tier-2 leagues with proper priorities (40→15, 141→16, 79→17, 136→18, 62→19, 72→20); Copa do Brasil 73→21
+- **MatchInsights.tsx**: "Best Bet" section redesigned to "Previsão IA" — structured 4-row card: Previsão (market name) / Probabilidade (% in large font) / Avaliação (color-coded market rating badge) / Insight (natural language insight text); uses `marketRating` from API or falls back to confidence-level mapping
+
 ## Recent Changes (Session 8 — Performance & Live Engine)
 
 - **lib/live-engine.ts** (NEW): Live Match Engine with two background workers — Worker 2 polls `fixtures?live=all` every 60s; Worker 3 re-fetches per-match statistics every 90s. Stores live fixture data + full team stats (shots, shotsOnTarget, possession, corners, fouls, yellowCards, redCards). Exported: `startLiveEngine()`, `getLiveMatches()`, `getLiveStats()`, `getLiveCount()`

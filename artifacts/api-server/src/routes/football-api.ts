@@ -23,37 +23,53 @@ const router: IRouter = Router();
 const API_BASE = "https://v3.football.api-sports.io";
 
 const TOP_LEAGUES = [
+  // Top 6 domestic leagues (tier 1)
   39,   // Premier League
   140,  // La Liga
   78,   // Bundesliga
   61,   // Ligue 1
   135,  // Serie A
-  71,   // Brasileirão
+  71,   // Brasileirão Série A
+  // Top 6 tier-2 domestic leagues
+  40,   // Championship (England)
+  141,  // La Liga 2 (Spain)
+  79,   // 2. Bundesliga (Germany)
+  136,  // Serie B (Italy)
+  62,   // Ligue 2 (France)
+  72,   // Série B (Brazil)
+  // European club competitions
   2,    // Champions League
   3,    // Europa League
+  848,  // Conference League
+  // South American cups
+  13,   // Copa Libertadores
+  11,   // Copa Sudamericana
+  9,    // Copa America
 ];
 
-// The 6 main leagues always guaranteed in pre-live section
-const TOP_SIX_LEAGUES = [39, 140, 78, 61, 135, 71];
+// The main leagues guaranteed in pre-live section (expanded to include second tiers)
+const TOP_SIX_LEAGUES = [39, 140, 78, 61, 135, 71, 40, 141, 79, 136, 62, 72, 2, 3, 848];
 
-// Expanded league list for the statistics scanner — main + northern European + Iberian + Benelux
+// Expanded scanner league list — covers all competitions visible in the sidebar
 const SCANNER_LEAGUES = [
-  // Main six
+  // Tier-1 domestic (highest priority)
   39, 140, 78, 61, 135, 71,
-  // Portugal: Primeira Liga + Liga Portugal 2
-  94, 95,
-  // Netherlands: Eredivisie + Eerste Divisie
-  88, 89,
-  // Scotland: Premiership + Championship
-  179, 181,
-  // Norway: Eliteserien + Division 1
-  103, 104,
-  // Sweden: Allsvenskan + Superettan
-  113, 114,
-  // Denmark: Superliga + Division 1
-  119, 120,
-  // UCL / UEL / UECL
+  // Tier-2 domestic
+  40, 141, 79, 136, 62, 72,
+  // European club cups
   2, 3, 848,
+  // South American cups
+  13, 11, 9, 73,
+  // Portugal
+  94, 95,
+  // Netherlands
+  88, 89,
+  // Scotland
+  179, 181,
+  // Nordic
+  103, 104, 113, 114, 119, 120,
+  // World Cup Qualifiers (UEFA + CONMEBOL)
+  31, 35,
 ];
 
 const cache = new Map<string, { data: unknown; ts: number }>();
@@ -1361,11 +1377,31 @@ router.get("/fixture/:id/analysis", async (req, res) => {
       : hW <= 1 && aW <= 1 ? "Both teams in poor form — low-confidence match"
       : "Evenly matched recent form";
 
+    // ── Market Rating ─────────────────────────────────────────────────────
+    const topProb = bestBet?.probability ?? 0;
+    const marketRating: string =
+      topProb >= 75 ? "Excelente Oportunidade"
+      : topProb >= 65 ? "Boa Oportunidade"
+      : topProb >= 55 ? "Oportunidade Razoável"
+      : "Alto Risco";
+
+    // ── AI Insight sentence ────────────────────────────────────────────────
+    const combinedAvgFinal = (homeStats?.avgGoalsFor ?? 1.3) + (awayStats?.avgGoalsFor ?? 1.3);
+    const insight: string = reasons.length > 0
+      ? reasons[0]
+      : combinedAvgFinal >= 2.5
+        ? `Ambas as equipes têm médias ofensivas fortes — esperado jogo de gols.`
+        : formInsight !== "Evenly matched recent form"
+          ? formInsight
+          : "Análise baseada em dados estatísticos das últimas 5 partidas.";
+
     return res.json({
       ...result,
       homeStats,
       awayStats,
       bestBet,
+      marketRating,
+      insight,
       reasons: reasons.slice(0, 2),
       formInsight,
       demo: false,
