@@ -2321,6 +2321,30 @@ async function fetchTeamCornerAvg(teamId: number): Promise<{ avg: number; played
   return { avg, played: count };
 }
 
+/** Get a team's season goal averages — reuses the same /teams/statistics call. */
+const teamGoalsCache = new Map<string, { avgFor: number; avgAgainst: number; played: number; ts: number }>();
+const GOALS_HIST_TTL = 24 * 60 * 60 * 1000;
+
+async function fetchTeamGoalAvg(teamId: number, leagueId: number): Promise<{ avgFor: number; avgAgainst: number; played: number } | null> {
+  const cacheKey = `${teamId}-${leagueId}`;
+  const cached = teamGoalsCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < GOALS_HIST_TTL) {
+    return { avgFor: cached.avgFor, avgAgainst: cached.avgAgainst, played: cached.played };
+  }
+  const { data, ok } = await scannerApiFetch(`/teams/statistics?team=${teamId}&league=${leagueId}&season=2025`, STATS_TTL);
+  if (!ok || !data?.response) {
+    if (cached) return { avgFor: cached.avgFor, avgAgainst: cached.avgAgainst, played: cached.played };
+    return null;
+  }
+  const r = data.response;
+  const played: number = r.fixtures?.played?.total ?? 0;
+  if (!played) return null;
+  const avgFor     = +((r.goals?.for?.total?.total  ?? 0) / played).toFixed(2);
+  const avgAgainst = +((r.goals?.against?.total?.total ?? 0) / played).toFixed(2);
+  teamGoalsCache.set(cacheKey, { avgFor, avgAgainst, played, ts: Date.now() });
+  return { avgFor, avgAgainst, played };
+}
+
 /** Get a team's average cards per match from /teams/statistics. */
 const cardsTeamCache = new Map<string, { avg: number; played: number; ts: number }>();
 const CARD_HIST_TTL = 24 * 60 * 60 * 1000;
@@ -2532,6 +2556,110 @@ router.get("/scanner/cards", async (_req, res) => {
     return res.json({ available: true, ...data, cached: false });
   } catch (err: any) {
     console.error("[scanner/cards]", err.message);
+    return res.json({ available: false, matches: [], isFallback: false });
+  }
+});
+
+// ── GET /scanner/opportunities ────────────────────────────────────────────────
+// AI Opportunity Scanner: composite score = 40% Over2.5 + 40% BTTS + 20% attack index
+// Confidence threshold ≥70% to be a "strong pick"
+const OPPORTUNITY_CONFIDENCE_THRESHOLD = 70;
+let opportunityScannerCache: { data: any; ts: number } | null = null;
+
+router.get("/scanner/opportunities", async (_req, res) => {
+  try {
+    if (opportunityScannerCache && Date.now() - opportunityScannerCache.ts < SCANNER_TTL) {
+      return res.json({ available: true, ...opportunityScannerCache.data, cached: true });
+    }
+
+    resetScannerBudget();
+
+    const prelive = await getScannerFixtures(SCANNER_LEAGUES, 80);
+    if (prelive.length === 0) {
+      return res.json({ available: false, matches: [], isFallback: false,
+        fallbackMessage: "Nenhuma oportunidade de alta confiança encontrada hoje. A IA continua monitorando os jogos." });
+    }
+
+    type OpportunityMatch = {
+      fixtureId: number;
+      homeTeam: string; awayTeam: string;
+      homeTeamLogo: string; awayTeamLogo: string;
+      league: string; leagueLogo: string; kickoff: string;
+      lambdaHome: number; lambdaAway: number;
+      over25Pct: number;
+      bttsPct: number;
+      attackIndex: number;
+      confidence: number;
+    };
+
+    const candidates: OpportunityMatch[] = [];
+    const scanBatch = prelive.slice(0, 25);
+
+    for (const f of scanBatch) {
+      const [homeGoals, awayGoals] = await Promise.all([
+        fetchTeamGoalAvg(f.homeTeam.id, f.league.id),
+        fetchTeamGoalAvg(f.awayTeam.id, f.league.id),
+      ]);
+      await new Promise(r => setTimeout(r, 80));
+
+      if (!homeGoals || !awayGoals) continue;
+      if (homeGoals.played < 5 || awayGoals.played < 5) continue; // need enough matches
+
+      // Poisson-based expected goals (Dixon-Coles style)
+      const lambdaHome = +((homeGoals.avgFor + awayGoals.avgAgainst) / 2).toFixed(2);
+      const lambdaAway = +((awayGoals.avgFor + homeGoals.avgAgainst) / 2).toFixed(2);
+      const lambdaTotal = lambdaHome + lambdaAway;
+
+      if (lambdaTotal < 1.5) continue; // too low-scoring to be interesting
+
+      // Over 2.5 Goals probability (P(goals >= 3))
+      const over25 = Math.round((1 - poissonCDF(lambdaTotal, 2)) * 100);
+
+      // BTTS: P(home ≥ 1) × P(away ≥ 1)
+      const pHomeScores = 1 - Math.exp(-lambdaHome);
+      const pAwayScores = 1 - Math.exp(-lambdaAway);
+      const btts = Math.round(pHomeScores * pAwayScores * 100);
+
+      // Attack strength index (0–100, normalized at 4.0 total goals)
+      const attackIndex = Math.min(100, Math.round((lambdaTotal / 4.0) * 100));
+
+      // Composite confidence: 40% Over2.5 + 40% BTTS + 20% attack
+      const confidence = Math.round(0.40 * over25 + 0.40 * btts + 0.20 * attackIndex);
+
+      candidates.push({
+        fixtureId: f.id,
+        homeTeam: f.homeTeam.name, awayTeam: f.awayTeam.name,
+        homeTeamLogo: f.homeTeam.logo, awayTeamLogo: f.awayTeam.logo,
+        league: f.league.name, leagueLogo: f.league.logo,
+        kickoff: f.date,
+        lambdaHome, lambdaAway,
+        over25Pct: over25, bttsPct: btts, attackIndex,
+        confidence,
+      });
+    }
+
+    candidates.sort((a, b) => b.confidence - a.confidence);
+
+    const strongPicks = candidates.filter(m => m.confidence >= OPPORTUNITY_CONFIDENCE_THRESHOLD).slice(0, 5);
+    let matches: OpportunityMatch[];
+    let isFallback = false;
+
+    if (strongPicks.length > 0) {
+      matches = strongPicks;
+    } else if (candidates.length > 0) {
+      matches = candidates.slice(0, 5);
+      isFallback = true;
+    } else {
+      return res.json({ available: false, matches: [], isFallback: false,
+        fallbackMessage: "Nenhuma oportunidade de alta confiança encontrada hoje. A IA continua monitorando os jogos.",
+        scannedAt: new Date().toISOString(), cached: false });
+    }
+
+    const data = { matches, isFallback, scannedAt: new Date().toISOString() };
+    opportunityScannerCache = { data, ts: Date.now() };
+    return res.json({ available: true, ...data, cached: false });
+  } catch (err: any) {
+    console.error("[scanner/opportunities]", err.message);
     return res.json({ available: false, matches: [], isFallback: false });
   }
 });
