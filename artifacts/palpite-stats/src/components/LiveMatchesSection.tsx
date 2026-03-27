@@ -56,10 +56,25 @@ interface LiveMatch {
   eventsStale: boolean;
 }
 
+interface FinishedMatch {
+  fixtureId: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeTeamLogo: string;
+  awayTeamLogo: string;
+  homeScore: number;
+  awayScore: number;
+  league: string;
+  leagueLogo: string;
+  status: string;
+  finishedAt: number;
+}
+
 interface LiveData {
   available: boolean;
   count: number;
   matches: LiveMatch[];
+  finished: FinishedMatch[];
   ts: number;
 }
 
@@ -127,11 +142,33 @@ function calcGoalProbs(elapsed: number, matchGPI: number, totalGoals: number) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+const LIVE_STATUS_SET = new Set(["1H", "HT", "2H", "ET", "P", "BT"]);
+
 function statusLabel(status: string, elapsed: number | null): string {
-  if (status === "HT") return "Intervalo";
-  if (status === "ET") return "Prorrog.";
-  if (status === "P")  return "Pênaltis";
-  if (elapsed !== null) return `${elapsed}'`;
+  if (status === "HT")   return "Intervalo";
+  if (status === "ET")   return "Prorrog.";
+  if (status === "P")    return "Pênaltis";
+  if (status === "BT")   return "Pausa";
+  if (status === "FT")   return "Encerrado";
+  if (status === "AET")  return "Enc. (P.E.)";
+  if (status === "PEN")  return "Enc. (Pen.)";
+  if (status === "CANC") return "Cancelado";
+  if (status === "ABD")  return "Abandonado";
+  if (status === "PST")  return "Adiado";
+  if (status === "WO")   return "W.O.";
+  if (status === "SUSP") return "Suspenso";
+  if (elapsed !== null)  return `${elapsed}'`;
+  return status;
+}
+
+function finishedStatusLabel(status: string): string {
+  if (status === "FT")   return "Encerrado";
+  if (status === "AET")  return "Enc. P.E.";
+  if (status === "PEN")  return "Enc. Pen.";
+  if (status === "CANC") return "Cancelado";
+  if (status === "ABD")  return "Abandonado";
+  if (status === "PST")  return "Adiado";
+  if (status === "WO")   return "W.O.";
   return status;
 }
 
@@ -599,7 +636,10 @@ export default function LiveMatchesSection() {
   });
 
   const enrichedMatches = useMemo<EnrichedMatch[]>(() => {
-    return (data?.matches ?? []).map(enrichMatch);
+    // Frontend safety filter — only render genuinely live statuses
+    return (data?.matches ?? [])
+      .filter(m => LIVE_STATUS_SET.has(m.status))
+      .map(enrichMatch);
   }, [data?.matches]);
 
   const hotMatches = useMemo<EnrichedMatch[]>(() => {
@@ -680,6 +720,53 @@ export default function LiveMatchesSection() {
           <LiveMatchCard key={match.fixtureId} match={match} idx={i} />
         ))}
       </div>
+
+      {/* ── Recently Finished Matches ── */}
+      {(data.finished?.length ?? 0) > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 pt-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-white/20 flex-shrink-0" />
+            <span className="text-[11px] font-semibold text-white/30 uppercase tracking-widest">
+              Partidas Encerradas
+            </span>
+            <span className="text-[10px] text-white/15">
+              ({data.finished!.length})
+            </span>
+          </div>
+          <div className="space-y-1">
+            {data.finished!.map(m => (
+              <div
+                key={m.fixtureId}
+                className="flex items-center gap-2 rounded-xl px-3 py-2 border border-white/[0.05] bg-white/[0.01] opacity-60"
+              >
+                {m.leagueLogo && (
+                  <img src={m.leagueLogo} alt="" className="w-3.5 h-3.5 object-contain opacity-40 flex-shrink-0" loading="lazy" />
+                )}
+                <div className="flex-1 flex items-center justify-between min-w-0 gap-2">
+                  <div className="flex items-center gap-1 min-w-0">
+                    {m.homeTeamLogo && (
+                      <img src={m.homeTeamLogo} alt="" className="w-3.5 h-3.5 object-contain flex-shrink-0" loading="lazy" />
+                    )}
+                    <span className="text-[11px] text-white/50 truncate">{m.homeTeam}</span>
+                  </div>
+                  <span className="flex-shrink-0 text-xs font-black text-white/40 tabular-nums px-1.5">
+                    {m.homeScore} – {m.awayScore}
+                  </span>
+                  <div className="flex items-center gap-1 min-w-0 justify-end">
+                    <span className="text-[11px] text-white/50 truncate text-right">{m.awayTeam}</span>
+                    {m.awayTeamLogo && (
+                      <img src={m.awayTeamLogo} alt="" className="w-3.5 h-3.5 object-contain flex-shrink-0" loading="lazy" />
+                    )}
+                  </div>
+                </div>
+                <span className="text-[9px] text-white/25 font-medium flex-shrink-0">
+                  {finishedStatusLabel(m.status)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

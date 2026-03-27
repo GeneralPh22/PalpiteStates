@@ -15,6 +15,17 @@
 
 const API_BASE = "https://v3.football.api-sports.io";
 
+// ── Status sets ───────────────────────────────────────────────────────────────
+
+/** Only these statuses are considered "live" — everything else is filtered out. */
+const LIVE_STATUSES = new Set(["1H", "HT", "2H", "ET", "P", "BT"]);
+
+/** These statuses mark a match as definitively over or cancelled. */
+const FINISHED_STATUSES = new Set(["FT", "AET", "PEN", "CANC", "ABD", "WO", "PST", "SUSP"]);
+
+/** How long to keep a finished match in the recents store (30 min). */
+const FINISHED_TTL_MS = 30 * 60_000;
+
 // ── Major-league priority set (processed first in each worker cycle) ──────────
 const PRIORITY_LEAGUE_IDS = new Set([
   39, 140, 78, 61, 135, 71,   // Top-6 domestic
@@ -83,9 +94,12 @@ export interface LiveMatchEvents {
 
 // ── In-memory stores ───────────────────────────────────────────────────────────
 
-const liveMatchesStore = new Map<number, LiveFixture>();
-const liveStatsStore   = new Map<number, LiveMatchStats>();
-const liveEventsStore  = new Map<number, LiveMatchEvents>();
+const liveMatchesStore     = new Map<number, LiveFixture>();
+const liveStatsStore       = new Map<number, LiveMatchStats>();
+const liveEventsStore      = new Map<number, LiveMatchEvents>();
+
+/** Recently finished matches — kept for FINISHED_TTL_MS so the UI can show them briefly. */
+const finishedMatchesStore = new Map<number, LiveFixture & { finishedAt: number }>();
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -229,6 +243,27 @@ async function runLiveDataWorker(): Promise<void> {
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
+/** Remove one fixture from all live stores and, if finished, move to the finished store. */
+function evictLiveFixture(id: number, fixture?: LiveFixture): void {
+  if (fixture && FINISHED_STATUSES.has(fixture.status)) {
+    // Promote to finished store — only if not already there
+    if (!finishedMatchesStore.has(id)) {
+      finishedMatchesStore.set(id, { ...fixture, finishedAt: Date.now() });
+    }
+  }
+  liveMatchesStore.delete(id);
+  liveStatsStore.delete(id);
+  liveEventsStore.delete(id);
+}
+
+/** Remove expired entries from the finished matches store. */
+function evictOldFinishedMatches(): void {
+  const cutoff = Date.now() - FINISHED_TTL_MS;
+  for (const [id, m] of finishedMatchesStore) {
+    if (m.finishedAt < cutoff) finishedMatchesStore.delete(id);
+  }
+}
+
 /**
  * Called by refreshLiveMatches() in football-api.ts every 60 s.
  * Parses raw /fixtures?live=all response, updates the store, evicts stale entries,
@@ -237,13 +272,32 @@ async function runLiveDataWorker(): Promise<void> {
 export function updateFromApiResponse(fixtures: any[]): void {
   if (!Array.isArray(fixtures)) return;
 
-  const currentIds = new Set<number>();
+  const seenIds = new Set<number>();
 
   for (const f of fixtures) {
     const id: number = f.fixture?.id;
     if (!id) continue;
-    currentIds.add(id);
 
+    const status: string = f.fixture?.status?.short ?? "";
+
+    // Never add finished/cancelled matches to the live store
+    if (FINISHED_STATUSES.has(status)) {
+      // If it was previously live, evict and promote to finished
+      const existing = liveMatchesStore.get(id);
+      if (existing) {
+        evictLiveFixture(id, { ...existing, status });
+        console.log(`[live-engine] match ${id} transitioned to ${status} — moved to finished`);
+      }
+      continue; // do NOT add to seenIds so the eviction below also handles it
+    }
+
+    // Only accept genuine live statuses
+    if (!LIVE_STATUSES.has(status)) {
+      console.log(`[live-engine] ignoring fixture ${id} with unexpected status "${status}"`);
+      continue;
+    }
+
+    seenIds.add(id);
     liveMatchesStore.set(id, {
       fixtureId:    id,
       homeTeam:     f.teams?.home?.name  ?? "",
@@ -257,15 +311,26 @@ export function updateFromApiResponse(fixtures: any[]): void {
       league:       f.league?.name       ?? "",
       leagueId:     f.league?.id         ?? 0,
       leagueLogo:   f.league?.logo       ?? "",
-      status:       f.fixture?.status?.short   ?? "",
+      status,
       elapsed:      f.fixture?.status?.elapsed ?? null,
       ts:           Date.now(),
     });
   }
 
-  // Evict matches that are no longer live
-  for (const id of liveMatchesStore.keys()) {
-    if (!currentIds.has(id)) {
+  // Evict matches that disappeared from the live feed
+  // API-Football stops including a match in /fixtures?live=all once it finishes,
+  // so "disappeared" almost always means "finished". We always promote these to
+  // the finished store using the last known score/status.
+  for (const [id, fixture] of liveMatchesStore) {
+    if (!seenIds.has(id)) {
+      // Add to finished store if not already there (use "FT" as fallback status)
+      if (!finishedMatchesStore.has(id)) {
+        finishedMatchesStore.set(id, {
+          ...fixture,
+          status:     FINISHED_STATUSES.has(fixture.status) ? fixture.status : "FT",
+          finishedAt: Date.now(),
+        });
+      }
       liveMatchesStore.delete(id);
       liveStatsStore.delete(id);
       liveEventsStore.delete(id);
@@ -282,24 +347,44 @@ export function updateFromApiResponse(fixtures: any[]): void {
     Promise.allSettled(tasks).then(() => {
       console.log(
         `[live-engine] ${liveMatchesStore.size} live | ` +
-        `${liveStatsStore.size} stats | ${liveEventsStore.size} events`
+        `${liveStatsStore.size} stats | ${liveEventsStore.size} events | ` +
+        `${finishedMatchesStore.size} recently finished`
       );
     });
+  }
+}
+
+/** 30 s safety cleanup — removes any live-store entries with finished statuses. */
+function runCleanupWorker(): void {
+  let removed = 0;
+  for (const [id, fixture] of liveMatchesStore) {
+    if (!LIVE_STATUSES.has(fixture.status)) {
+      evictLiveFixture(id, fixture);
+      removed++;
+    }
+  }
+  evictOldFinishedMatches();
+  if (removed > 0) {
+    console.log(`[live-engine] cleanup — removed ${removed} non-live fixture(s)`);
   }
 }
 
 /** Call once at server startup. */
 export function startLiveEngine(): void {
   setInterval(runLiveDataWorker, 60_000);
-  console.log("[live-engine] data worker started (stats + events, 60 s interval)");
+  setInterval(runCleanupWorker,  30_000);  // extra safety: evict finished matches every 30 s
+  console.log("[live-engine] data worker started (stats + events 60 s | cleanup 30 s)");
 }
 
 export function getLiveMatches(): LiveFixture[] {
-  return [...liveMatchesStore.values()].sort((a, b) => {
-    const rank = (s: string) =>
-      s === "1H" || s === "2H" ? 0 : s === "HT" ? 1 : 2;
-    return rank(a.status) - rank(b.status);
-  });
+  return [...liveMatchesStore.values()]
+    // Double-filter: only genuine live statuses
+    .filter(m => LIVE_STATUSES.has(m.status))
+    .sort((a, b) => {
+      const rank = (s: string) =>
+        s === "1H" || s === "2H" ? 0 : s === "HT" ? 1 : 2;
+      return rank(a.status) - rank(b.status);
+    });
 }
 
 export function getLiveStats(fixtureId: number): LiveMatchStats | null {
@@ -308,6 +393,12 @@ export function getLiveStats(fixtureId: number): LiveMatchStats | null {
 
 export function getLiveEvents(fixtureId: number): LiveMatchEvents | null {
   return liveEventsStore.get(fixtureId) ?? null;
+}
+
+/** Returns recently finished matches (within FINISHED_TTL_MS) for the UI. */
+export function getFinishedMatches(): Array<LiveFixture & { finishedAt: number }> {
+  evictOldFinishedMatches();
+  return [...finishedMatchesStore.values()].sort((a, b) => b.finishedAt - a.finishedAt);
 }
 
 export function getLiveCount(): number {

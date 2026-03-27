@@ -13,6 +13,7 @@ import {
   getLiveMatches,
   getLiveStats,
   getLiveEvents,
+  getFinishedMatches,
   getLiveCount,
   type LiveFixture,
   type LiveMatchStats,
@@ -701,30 +702,36 @@ scheduleFeaturedRefresh();
 const LIVE_STATUS_CODES = new Set(["1H", "2H", "ET", "HT", "P", "BT"]);
 let liveRefreshRunning = false;
 
+/** Helper: enrich a single match with its stats + events snapshot. */
+function enrichMatchForResponse(m: LiveFixture, ts: number) {
+  const stats  = getLiveStats(m.fixtureId);
+  const evData = getLiveEvents(m.fixtureId);
+  const hasRealStats = stats && (
+    stats.home.shots > 0 || stats.away.shots > 0 ||
+    stats.home.shotsOnTarget > 0 || stats.home.corners > 0
+  );
+  return {
+    ...m,
+    stats:       hasRealStats ? stats : null,
+    statsStale:  stats  ? (ts - stats.ts  > 90_000) : false,
+    events:      evData?.events ?? null,
+    eventsStale: evData ? (ts - evData.ts > 90_000) : false,
+  };
+}
+
 /** Builds the exact same payload as GET /live/matches and pushes it via WS. */
 function buildAndBroadcast(): void {
-  const matches = getLiveMatches();
-  const ts = Date.now();
-  if (matches.length === 0) {
-    broadcastLiveUpdate({ available: false, count: 0, matches: [], ts });
-    return;
-  }
-  const enriched = matches.map(m => {
-    const stats  = getLiveStats(m.fixtureId);
-    const evData = getLiveEvents(m.fixtureId);
-    const hasRealStats = stats && (
-      stats.home.shots > 0 || stats.away.shots > 0 ||
-      stats.home.shotsOnTarget > 0 || stats.home.corners > 0
-    );
-    return {
-      ...m,
-      stats:       hasRealStats ? stats : null,
-      statsStale:  stats  ? (ts - stats.ts   > 90_000) : false,
-      events:      evData?.events ?? null,
-      eventsStale: evData ? (ts - evData.ts  > 90_000) : false,
-    };
+  const matches   = getLiveMatches();
+  const finished  = getFinishedMatches();
+  const ts        = Date.now();
+  const enriched  = matches.map(m => enrichMatchForResponse(m, ts));
+  broadcastLiveUpdate({
+    available: enriched.length > 0,
+    count:     enriched.length,
+    matches:   enriched,
+    finished,
+    ts,
   });
-  broadcastLiveUpdate({ available: true, count: enriched.length, matches: enriched, ts });
 }
 
 async function refreshLiveMatches() {
@@ -2752,30 +2759,19 @@ router.get("/scanner/opportunities", async (_req, res) => {
 });
 
 // ── GET /live/matches ─────────────────────────────────────────────────────────
-// Returns all currently live fixtures with scores, stats, and events.
+// Returns live fixtures (stats + events) plus recently finished matches.
 router.get("/live/matches", (_req, res) => {
-  const matches = getLiveMatches();
-  const ts = Date.now();
-  if (matches.length === 0) {
-    return res.json({ available: false, count: 0, matches: [], ts });
-  }
-  const enriched = matches.map(m => {
-    const stats  = getLiveStats(m.fixtureId);
-    const evData = getLiveEvents(m.fixtureId);
-    // Only expose stats if they contain real data (no all-zero ghost entries)
-    const hasRealStats = stats && (
-      stats.home.shots > 0 || stats.away.shots > 0 ||
-      stats.home.shotsOnTarget > 0 || stats.home.corners > 0
-    );
-    return {
-      ...m,
-      stats:       hasRealStats ? stats : null,
-      statsStale:  stats ? (ts - stats.ts > 90_000) : false,
-      events:      evData?.events ?? null,
-      eventsStale: evData ? (ts - evData.ts > 90_000) : false,
-    };
+  const matches  = getLiveMatches();   // already filtered to LIVE_STATUSES only
+  const finished = getFinishedMatches();
+  const ts       = Date.now();
+  const enriched = matches.map(m => enrichMatchForResponse(m, ts));
+  return res.json({
+    available: enriched.length > 0,
+    count:     enriched.length,
+    matches:   enriched,
+    finished,
+    ts,
   });
-  return res.json({ available: true, count: enriched.length, matches: enriched, ts });
 });
 
 // ── GET /live/stats/:fixtureId ────────────────────────────────────────────────
