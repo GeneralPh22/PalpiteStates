@@ -623,9 +623,158 @@ function LiveTimeline({ events, homeTeamId }: { events: LiveEvent[]; homeTeamId:
   );
 }
 
+// ── AI Goal Pressure Detector ─────────────────────────────────────────────────
+// Calculates a per-team pressure score from live stats and inter-scan DA spikes.
+// Completely independent of calcGoalProbs and detectOpportunities.
+
+interface PressureSnap {
+  homeDa: number;
+  awayDa: number;
+}
+
+interface PressureResult {
+  score: number;               // composite pressure score
+  level: "critical" | "elevated";
+  label: string;               // human-readable alert text
+  icons: string[];             // e.g. ["🔥", "🚨"]
+  dominantTeam: string;        // team exerting the most pressure
+}
+
+/**
+ * Pure pressure-score formula for a single team.
+ * Formula (as specified):
+ *   DA × 2  +  SoT × 3  +  Shots × 1
+ *   + 2 if possession > 55%
+ *   + 3 if recent DA spike ≥ 3 since last scan
+ */
+function calcTeamPressureScore(stats: TeamStats, prevDa: number): number {
+  const possNum     = parseInt(stats.possession) || 0;
+  const recentSpike = stats.dangerousAttacks - prevDa >= 3 ? 3 : 0;
+  return (
+    stats.dangerousAttacks * 2 +
+    stats.shotsOnTarget    * 3 +
+    stats.shots            * 1 +
+    (possNum > 55 ? 2 : 0)    +
+    recentSpike
+  );
+}
+
+/** Returns a PressureResult if either team's score ≥ 12, otherwise null. */
+function getPressureResult(
+  match: EnrichedMatch,
+  prevSnap: PressureSnap | undefined
+): PressureResult | null {
+  if (!match.stats) return null;
+
+  // On first scan prevSnap is undefined → spike bonus = 0 (safe default)
+  const prevHomeDa = prevSnap?.homeDa ?? match.stats.home.dangerousAttacks;
+  const prevAwayDa = prevSnap?.awayDa ?? match.stats.away.dangerousAttacks;
+
+  const homeScore = calcTeamPressureScore(match.stats.home, prevHomeDa);
+  const awayScore = calcTeamPressureScore(match.stats.away, prevAwayDa);
+  const topScore  = Math.max(homeScore, awayScore);
+  const domTeam   = homeScore >= awayScore ? match.homeTeam : match.awayTeam;
+
+  if (topScore < 12) return null;
+
+  const icons: string[] = ["🔥"]; // always shown for score ≥ 12
+  let level: PressureResult["level"];
+  let label: string;
+
+  if (topScore >= 18) {
+    level = "critical";
+    label = "Alta Probabilidade de Gol";
+    icons.push("🚨");
+  } else {
+    level = "elevated";
+    label = "Pressão de Gol Aumentando";
+    icons.push("⚡");
+  }
+
+  return { score: topScore, level, label, icons, dominantTeam: domTeam };
+}
+
+/** Banner shown inside each LiveMatchCard when pressure score ≥ 12. */
+function PressureAlertBanner({ result }: { result: PressureResult }) {
+  const isCritical = result.level === "critical";
+  return (
+    <div className={cn(
+      "flex items-center gap-1.5 px-3 py-1.5 border-b",
+      isCritical
+        ? "bg-orange-500/10 border-orange-500/20"
+        : "bg-yellow-500/[0.06] border-yellow-500/[0.12]"
+    )}>
+      <div className="flex items-center gap-0.5 flex-shrink-0">
+        {result.icons.map((icon, i) => (
+          <span
+            key={i}
+            className={cn("text-[12px] leading-none", isCritical && "animate-pulse")}
+          >
+            {icon}
+          </span>
+        ))}
+      </div>
+      <span className={cn(
+        "text-[10px] font-bold tracking-wide",
+        isCritical ? "text-orange-400" : "text-yellow-400/80"
+      )}>
+        {result.label}
+      </span>
+      <span className="ml-auto text-[8px] text-white/20 font-mono tabular-nums">
+        {result.dominantTeam} · {result.score}pts
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Scans all live matches every 10 s, tracks inter-scan DA spikes via a ref,
+ * and returns a Map<fixtureId, PressureResult> for any match that qualifies.
+ * Completely separate from the Opportunity Radar and calcGoalProbs.
+ */
+function usePressureScanner(matches: EnrichedMatch[]): Map<number, PressureResult> {
+  const prevSnapsRef = useRef<Map<number, PressureSnap>>(new Map());
+  const [results, setResults] = useState<Map<number, PressureResult>>(new Map());
+
+  const runScan = useCallback(() => {
+    const nextSnaps   = new Map<number, PressureSnap>();
+    const nextResults = new Map<number, PressureResult>();
+
+    for (const m of matches) {
+      if (m.stats) {
+        // Always update the snapshot (even if no pressure alert)
+        nextSnaps.set(m.fixtureId, {
+          homeDa: m.stats.home.dangerousAttacks,
+          awayDa: m.stats.away.dangerousAttacks,
+        });
+        const result = getPressureResult(m, prevSnapsRef.current.get(m.fixtureId));
+        if (result) nextResults.set(m.fixtureId, result);
+      }
+    }
+
+    prevSnapsRef.current = nextSnaps;
+    setResults(nextResults);
+  }, [matches]);
+
+  // Immediate scan on data change
+  useEffect(() => { runScan(); }, [runScan]);
+
+  // Independent 10 s interval for spike detection
+  useEffect(() => {
+    const id = setInterval(runScan, 10_000);
+    return () => clearInterval(id);
+  }, [runScan]);
+
+  return results;
+}
+
 // ── Match Card (full) ──────────────────────────────────────────────────────────
 
-function LiveMatchCard({ match, idx }: { match: EnrichedMatch; idx: number }) {
+function LiveMatchCard({ match, idx, pressureResult }: {
+  match: EnrichedMatch;
+  idx: number;
+  pressureResult?: PressureResult;
+}) {
   const [expanded, setExpanded] = useState(false);
   const label    = statusLabel(match.status, match.elapsed);
   const hasStats = !!match.stats;
@@ -658,13 +807,18 @@ function LiveMatchCard({ match, idx }: { match: EnrichedMatch; idx: number }) {
         </div>
       )}
 
-      {/* 🚨 Goal Alert Banner */}
+      {/* 🚨 Goal Alert Banner (GPI-based — existing logic untouched) */}
       {match.goalAlert && (
         <div className="flex items-center gap-1.5 px-3 py-1 bg-red-500/10 border-b border-red-500/20">
           <span className="text-[11px] font-black text-red-400 animate-pulse tracking-wide">
             🚨 Gol Provável em Breve
           </span>
         </div>
+      )}
+
+      {/* 🔥 Pressure Alert Banner (score-based — AI Goal Pressure Detector) */}
+      {pressureResult && (
+        <PressureAlertBanner result={pressureResult} />
       )}
 
       {/* ── Match header row ── */}
@@ -959,6 +1113,9 @@ export default function LiveMatchesSection() {
       .map(enrichMatch);
   }, [data?.matches]);
 
+  // AI Goal Pressure Detector — runs every 10 s, returns pressure results per fixture
+  const pressureResults = usePressureScanner(enrichedMatches);
+
   const hotMatches = useMemo<EnrichedMatch[]>(() => {
     return [...enrichedMatches]
       .filter(m => m.matchGPI > 0)
@@ -1039,7 +1196,12 @@ export default function LiveMatchesSection() {
       {/* ── All Live Matches ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
         {enrichedMatches.map((match, i) => (
-          <LiveMatchCard key={match.fixtureId} match={match} idx={i} />
+          <LiveMatchCard
+            key={match.fixtureId}
+            match={match}
+            idx={i}
+            pressureResult={pressureResults.get(match.fixtureId)}
+          />
         ))}
       </div>
 
