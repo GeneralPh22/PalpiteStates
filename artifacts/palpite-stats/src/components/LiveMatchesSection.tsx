@@ -180,6 +180,323 @@ function gpiBarColor(gpi: number) {
   return gpi > 75 ? "bg-red-500" : gpi > 50 ? "bg-amber-500" : "bg-emerald-500/60";
 }
 
+// ── Opportunity Radar types ────────────────────────────────────────────────────
+
+interface OpportunitySignal {
+  fixtureId: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeTeamLogo: string;
+  awayTeamLogo: string;
+  homeScore: number;
+  awayScore: number;
+  league: string;
+  leagueLogo: string;
+  elapsed: number | null;
+  status: string;
+  tags: string[];          // visual badges: 🚨 ⚡ 🔥
+  reasons: string[];       // human-readable why it qualified
+  bestLabel: string;       // "O 1.5" | "O 2.5" | "Próx 10'" | "Pressão" | "Spike DA"
+  bestProb: number;        // highest probability (0–100); 0 for non-prob triggers
+  matchGPI: number;
+  over15: number;
+  over25: number;
+  nextGoal: number;
+  isStale?: boolean;       // stats temporarily disappeared — showing last known values
+}
+
+/** Snapshot of key stats per fixture used to detect inter-scan spikes. */
+interface StatSnapshot {
+  da: number;   // total dangerous attacks (home + away)
+  sot: number;  // total shots on target (home + away)
+}
+
+// ── Opportunity detection (pure function, called every 10 s) ──────────────────
+
+function detectOpportunities(
+  matches: EnrichedMatch[],
+  prevSnaps: Map<number, StatSnapshot>
+): { signals: OpportunitySignal[]; nextSnaps: Map<number, StatSnapshot> } {
+  const signals: OpportunitySignal[] = [];
+  const nextSnaps = new Map<number, StatSnapshot>();
+
+  for (const m of matches) {
+    const total = m.homeScore + m.awayScore;
+
+    // Always update snapshot for DA-spike tracking (even if no stats yet)
+    const homeDa  = m.stats?.home.dangerousAttacks ?? 0;
+    const awayDa  = m.stats?.away.dangerousAttacks ?? 0;
+    const homeSoT = m.stats?.home.shotsOnTarget ?? 0;
+    const awaySoT = m.stats?.away.shotsOnTarget ?? 0;
+    const totalDa  = homeDa + awayDa;
+    const totalSoT = homeSoT + awaySoT;
+    nextSnaps.set(m.fixtureId, { da: totalDa, sot: totalSoT });
+
+    // Cannot compute probabilities without stats or elapsed time
+    const hasStats = !!m.stats && m.elapsed !== null;
+    const probs = hasStats
+      ? calcGoalProbs(m.elapsed!, m.matchGPI, total)
+      : { nextGoal: 0, over15: 0, over25: 0, over35: 0 };
+
+    const tags: string[]    = [];
+    const reasons: string[] = [];
+    let qualifies = false;
+    let bestLabel = "";
+    let bestProb  = 0;
+
+    // ── Condition 1: O1.5 ≥ 75% ──────────────────────────────────────────────
+    if (probs.over15 >= 75) {
+      qualifies = true;
+      reasons.push(`Over 1.5: ${probs.over15}%`);
+      if (probs.over15 > bestProb) { bestProb = probs.over15; bestLabel = "O 1.5"; }
+    }
+
+    // ── Condition 2: O2.5 ≥ 65% ──────────────────────────────────────────────
+    if (probs.over25 >= 65) {
+      qualifies = true;
+      reasons.push(`Over 2.5: ${probs.over25}%`);
+      if (probs.over25 > bestProb) { bestProb = probs.over25; bestLabel = "O 2.5"; }
+    }
+
+    // ── Condition 3: Next 10' ≥ 25% ──────────────────────────────────────────
+    if (probs.nextGoal >= 25) {
+      qualifies = true;
+      reasons.push(`Gol próx. 10': ${probs.nextGoal}%`);
+      if (probs.nextGoal > bestProb) { bestProb = probs.nextGoal; bestLabel = "Próx 10'"; }
+      if (probs.nextGoal >= 50)       tags.push("🚨");
+      else                            tags.push("⚡");
+    }
+
+    // ── Condition 4: High attacking pressure difference ───────────────────────
+    if (hasStats) {
+      const gpiDiff = Math.abs(m.homeGPI - m.awayGPI);
+      if (gpiDiff >= 35 && Math.max(m.homeGPI, m.awayGPI) >= 55) {
+        qualifies = true;
+        const domTeam = m.homeGPI > m.awayGPI ? m.homeTeam : m.awayTeam;
+        reasons.push(`Alta pressão: ${domTeam} (GPI +${gpiDiff})`);
+        tags.push("🔥");
+        if (!bestLabel) { bestLabel = "Pressão"; bestProb = Math.max(m.homeGPI, m.awayGPI); }
+      }
+    }
+
+    // ── Condition 5: Sudden spike in dangerous attacks (inter-scan) ───────────
+    const prev = prevSnaps.get(m.fixtureId);
+    if (prev && hasStats) {
+      const daSpike  = totalDa  - prev.da;
+      const sotSpike = totalSoT - prev.sot;
+      if (daSpike >= 4) {
+        qualifies = true;
+        reasons.push(`Spike de ataques perigosos: +${daSpike}`);
+        tags.push("⚡");
+        if (!bestLabel) { bestLabel = "Spike DA"; bestProb = Math.min(99, daSpike * 10); }
+      }
+      if (sotSpike >= 2) {
+        qualifies = true;
+        reasons.push(`Finalizações no alvo crescendo: +${sotSpike}`);
+        if (!tags.includes("⚡")) tags.push("⚡");
+        if (!bestLabel) { bestLabel = "Momentum"; bestProb = Math.min(99, sotSpike * 15); }
+      }
+    }
+
+    // ── Additional visual tags (non-qualifying, enhance display) ─────────────
+    if (m.goalAlert && !tags.includes("🚨")) tags.push("🚨");
+    if (m.matchGPI >= 70 && !tags.includes("🔥")) tags.push("🔥");
+
+    if (qualifies) {
+      signals.push({
+        fixtureId:    m.fixtureId,
+        homeTeam:     m.homeTeam,
+        awayTeam:     m.awayTeam,
+        homeTeamLogo: m.homeTeamLogo,
+        awayTeamLogo: m.awayTeamLogo,
+        homeScore:    m.homeScore,
+        awayScore:    m.awayScore,
+        league:       m.league,
+        leagueLogo:   m.leagueLogo,
+        elapsed:      m.elapsed,
+        status:       m.status,
+        tags:         [...new Set(tags)],
+        reasons,
+        bestLabel,
+        bestProb,
+        matchGPI:     m.matchGPI,
+        over15:       probs.over15,
+        over25:       probs.over25,
+        nextGoal:     probs.nextGoal,
+      });
+    }
+  }
+
+  // Sort by best probability descending
+  signals.sort((a, b) => b.bestProb - a.bestProb);
+  return { signals, nextSnaps };
+}
+
+// ── Live Opportunity Radar component ──────────────────────────────────────────
+
+function LiveOpportunityRadar({ matches }: { matches: EnrichedMatch[] }) {
+  const prevSnapsRef      = useRef<Map<number, StatSnapshot>>(new Map());
+  const lastValidRef      = useRef<OpportunitySignal[]>([]);
+  const [signals, setSignals] = useState<OpportunitySignal[]>([]);
+  const [scanCount, setScanCount] = useState(0); // used to trigger re-renders on interval
+
+  // Core scan function — pure computation, updates state
+  const runScan = useCallback(() => {
+    const { signals: fresh, nextSnaps } = detectOpportunities(matches, prevSnapsRef.current);
+    prevSnapsRef.current = nextSnaps;
+
+    // Failsafe: if a previously-qualifying match temporarily lost its stats,
+    // keep showing it with its last known probabilities (marked as stale)
+    const freshIds = new Set(fresh.map(s => s.fixtureId));
+    const staleCarryOver = lastValidRef.current.filter(prev => {
+      if (freshIds.has(prev.fixtureId)) return false; // already in fresh list
+      const stillLive = matches.some(m => m.fixtureId === prev.fixtureId);
+      const lostStats = matches.find(m => m.fixtureId === prev.fixtureId)?.stats === null;
+      return stillLive && lostStats; // still live but stats dropped
+    }).map(s => ({ ...s, isStale: true }));
+
+    const combined = [...fresh, ...staleCarryOver];
+    if (fresh.length > 0) lastValidRef.current = fresh; // only update cache with fresh data
+    setSignals(combined);
+    setScanCount(c => c + 1);
+  }, [matches]);
+
+  // Run immediately when matches change
+  useEffect(() => { runScan(); }, [runScan]);
+
+  // Also run every 10 s independently for spike detection
+  useEffect(() => {
+    const id = setInterval(runScan, 10_000);
+    return () => clearInterval(id);
+  }, [runScan]);
+
+  const hasSignals = signals.length > 0;
+
+  return (
+    <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.03] p-3 space-y-2">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm">📡</span>
+          <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">
+            Radar de Oportunidades ao Vivo
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+          <span className="text-[8.5px] text-white/20 tabular-nums">
+            scan #{scanCount}
+          </span>
+        </div>
+      </div>
+
+      {/* Empty state */}
+      {!hasSignals && (
+        <div className="flex items-center gap-2 py-1.5 text-white/25">
+          <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" />
+          <span className="text-[11px]">
+            Monitorando partidas ao vivo para novas oportunidades...
+          </span>
+        </div>
+      )}
+
+      {/* Opportunity cards */}
+      {hasSignals && (
+        <div className="space-y-1.5">
+          {signals.map(sig => (
+            <OpportunityCard key={sig.fixtureId} sig={sig} />
+          ))}
+        </div>
+      )}
+
+      {/* Legend */}
+      <div className="flex items-center gap-3 pt-0.5 border-t border-white/[0.04]">
+        <span className="text-[8.5px] text-white/15 uppercase tracking-wider">Legenda:</span>
+        <span className="text-[8.5px] text-white/25">🚨 Gol provável</span>
+        <span className="text-[8.5px] text-white/25">🔥 Alta pressão</span>
+        <span className="text-[8.5px] text-white/25">⚡ Momentum</span>
+      </div>
+    </div>
+  );
+}
+
+function OpportunityCard({ sig }: { sig: OpportunitySignal }) {
+  const label   = statusLabel(sig.status, sig.elapsed);
+  const isHot   = sig.bestProb >= 65 || sig.tags.includes("🚨");
+  const probColor = sig.bestProb >= 75 ? "text-red-400" : sig.bestProb >= 65 ? "text-amber-400" : "text-emerald-400";
+  const probBg    = sig.bestProb >= 75 ? "bg-red-500/10 border-red-500/20" : sig.bestProb >= 65 ? "bg-amber-500/10 border-amber-500/20" : "bg-emerald-500/10 border-emerald-500/20";
+
+  return (
+    <div className={cn(
+      "rounded-xl border p-2.5 transition-colors",
+      isHot ? "border-amber-500/20 bg-amber-500/[0.04]" : "border-white/[0.07] bg-white/[0.02]",
+      sig.isStale && "opacity-60"
+    )}>
+      <div className="flex items-start gap-2">
+        {/* Tags column */}
+        <div className="flex flex-col items-center gap-0.5 flex-shrink-0 w-6 pt-0.5">
+          {sig.tags.slice(0, 3).map((t, i) => (
+            <span key={i} className="text-[13px] leading-none">{t}</span>
+          ))}
+        </div>
+
+        {/* Match info */}
+        <div className="flex-1 min-w-0 space-y-1">
+          {/* Teams row */}
+          <div className="flex items-center gap-1">
+            {sig.homeTeamLogo && (
+              <img src={sig.homeTeamLogo} alt="" className="w-3.5 h-3.5 object-contain flex-shrink-0" loading="lazy" />
+            )}
+            <span className="text-[11px] font-semibold text-white truncate">
+              {sig.homeTeam}
+            </span>
+            <span className="flex-shrink-0 text-[11px] font-black text-white/60 tabular-nums px-1">
+              {sig.homeScore}–{sig.awayScore}
+            </span>
+            <span className="text-[11px] font-semibold text-white truncate text-right flex-1">
+              {sig.awayTeam}
+            </span>
+            {sig.awayTeamLogo && (
+              <img src={sig.awayTeamLogo} alt="" className="w-3.5 h-3.5 object-contain flex-shrink-0" loading="lazy" />
+            )}
+          </div>
+
+          {/* Reasons */}
+          <div className="flex flex-wrap gap-1">
+            {sig.reasons.map((r, i) => (
+              <span key={i} className="text-[8.5px] bg-white/[0.05] border border-white/[0.08] rounded-full px-1.5 py-0.5 text-white/50">
+                {r}
+              </span>
+            ))}
+            {sig.isStale && (
+              <span className="text-[8.5px] bg-amber-500/10 border border-amber-500/20 rounded-full px-1.5 py-0.5 text-amber-400/70">
+                Stats atualizando...
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Best probability badge */}
+        <div className={cn("rounded-lg border px-2 py-1 text-center flex-shrink-0 min-w-[48px]", probBg)}>
+          <div className="text-[7.5px] text-white/30 uppercase tracking-wide leading-none mb-0.5">
+            {sig.bestLabel}
+          </div>
+          <div className={cn("text-xs font-black tabular-nums leading-none", probColor)}>
+            {sig.bestProb > 0 ? `${sig.bestProb}%` : "–"}
+          </div>
+        </div>
+
+        {/* Minute badge */}
+        <div className="flex-shrink-0 text-center">
+          <span className="text-[9px] text-red-400 font-bold tabular-nums">
+            {label}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function eventIcon(type: string, detail: string): string {
   if (type === "Goal") {
     if (detail.toLowerCase().includes("own")) return "⚽ (CG)";
@@ -693,6 +1010,11 @@ export default function LiveMatchesSection() {
 
         <span className="text-[10px] text-white/20 ml-auto">Toque para ver stats</span>
       </div>
+
+      {/* ── 📡 Live Opportunity Radar ── */}
+      {enrichedMatches.length > 0 && (
+        <LiveOpportunityRadar matches={enrichedMatches} />
+      )}
 
       {/* ── 🔥 Hot Match Scanner ── */}
       {hotMatches.length > 0 && (
