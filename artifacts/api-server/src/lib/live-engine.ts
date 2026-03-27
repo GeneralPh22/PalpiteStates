@@ -1,16 +1,29 @@
 /**
  * Live Match Engine
  *
- * This module does NOT poll the API itself. Instead, it receives fixture data
- * from the existing refreshLiveMatches() worker (already runs every 60 s) via
- * updateFromApiResponse(). This avoids double-calling /fixtures?live=all.
+ * Receives fixture data from the existing refreshLiveMatches() worker (runs
+ * every 60 s) via updateFromApiResponse(). No duplicate /fixtures?live=all calls.
  *
- * Worker 3 — refreshes per-fixture statistics every 90 s, independently.
+ * Worker 3 — refreshes per-fixture statistics AND events every 60 s.
+ *   - Prioritises major-league matches
+ *   - Hard limit: 20 fixtures per cycle (API budget protection)
+ *   - Stats: 55 s freshness cache; empty results retried after 20 s
+ *   - Events: 55 s freshness cache
  *
- * Frontend reads from getLiveMatches() / getLiveStats() — zero API cost.
+ * Frontend reads getLiveMatches() / getLiveStats() / getLiveEvents() — zero API cost.
  */
 
 const API_BASE = "https://v3.football.api-sports.io";
+
+// ── Major-league priority set (processed first in each worker cycle) ──────────
+const PRIORITY_LEAGUE_IDS = new Set([
+  39, 140, 78, 61, 135, 71,   // Top-6 domestic
+  2, 3, 848,                   // UCL / UEL / UECL
+  13, 11, 9, 73,               // Copa Libertadores / Sudamericana / Copa America / Copa do Brasil
+  40, 141, 79, 136, 62, 72,   // Tier-2 domestic
+]);
+
+const MAX_LIVE_FIXTURES = 20; // hard API-budget cap per cycle
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -18,6 +31,8 @@ export interface LiveFixture {
   fixtureId: number;
   homeTeam: string;
   awayTeam: string;
+  homeTeamId: number;
+  awayTeamId: number;
   homeTeamLogo: string;
   awayTeamLogo: string;
   homeScore: number;
@@ -39,7 +54,7 @@ export interface TeamStats {
   fouls: number;
   yellowCards: number;
   redCards: number;
-  dangerousAttacks: number; // API-Football "Dangerous Attacks" stat
+  dangerousAttacks: number;
 }
 
 export interface LiveMatchStats {
@@ -49,10 +64,28 @@ export interface LiveMatchStats {
   ts: number;
 }
 
+export interface LiveEvent {
+  minute: number;
+  extra: number | null;
+  type: string;          // "Goal" | "Card" | "subst" | "Var"
+  detail: string;        // "Normal Goal" | "Yellow Card" | "Red Card" | "Penalty" | ...
+  teamId: number;
+  teamName: string;
+  playerName: string | null;
+  assistName: string | null;
+}
+
+export interface LiveMatchEvents {
+  fixtureId: number;
+  events: LiveEvent[];
+  ts: number;
+}
+
 // ── In-memory stores ───────────────────────────────────────────────────────────
 
 const liveMatchesStore = new Map<number, LiveFixture>();
 const liveStatsStore   = new Map<number, LiveMatchStats>();
+const liveEventsStore  = new Map<number, LiveMatchEvents>();
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -78,6 +111,11 @@ function extractStat(stats: any[], type: string): any {
   return stats?.find((s: any) => s.type === type)?.value ?? null;
 }
 
+const EMPTY_TEAM_STATS = (name = ""): TeamStats => ({
+  team: name, shots: 0, shotsOnTarget: 0, possession: "0%",
+  corners: 0, fouls: 0, yellowCards: 0, redCards: 0, dangerousAttacks: 0,
+});
+
 function mapTeamStats(teamName: string, stats: any[]): TeamStats {
   const possession = extractStat(stats, "Ball Possession");
   return {
@@ -93,41 +131,108 @@ function mapTeamStats(teamName: string, stats: any[]): TeamStats {
   };
 }
 
-/** Fetch and store statistics for one live fixture. */
+// ── Stats fetcher ─────────────────────────────────────────────────────────────
+
 async function fetchStatsForFixture(fixtureId: number): Promise<void> {
-  // Skip if stats are fresh (< 55 s old) to avoid wasteful refetches
   const existing = liveStatsStore.get(fixtureId);
-  if (existing && Date.now() - existing.ts < 55_000) return;
+  if (existing) {
+    const age     = Date.now() - existing.ts;
+    const hasData = existing.home.shots > 0 || existing.away.shots > 0 ||
+                    existing.home.shotsOnTarget > 0 || existing.home.corners > 0;
+    // Fresh with real data → skip; empty → retry after 20 s; stale → refetch after 55 s
+    if (hasData && age < 55_000) return;
+    if (!hasData && age < 20_000) return;
+  }
 
   const json = await fetchLiveApi(`/fixtures/statistics?fixture=${fixtureId}`);
-  if (!json?.response?.length) return;
+  if (!json?.response?.length) {
+    // API returned nothing — stamp a time so we retry in 20 s, not immediately
+    if (!existing) {
+      liveStatsStore.set(fixtureId, {
+        fixtureId,
+        home: EMPTY_TEAM_STATS(),
+        away: EMPTY_TEAM_STATS(),
+        ts: Date.now() - 35_000, // intentionally "old" so 20s retry triggers
+      });
+    }
+    return;
+  }
 
   const homeEntry = json.response[0];
   const awayEntry = json.response[1];
   if (!homeEntry) return;
 
-  const homeStats = mapTeamStats(homeEntry.team?.name ?? "", homeEntry.statistics ?? []);
-  const awayStats = awayEntry
-    ? mapTeamStats(awayEntry.team?.name ?? "", awayEntry.statistics ?? [])
-    : { team: "", shots: 0, shotsOnTarget: 0, possession: "0%", corners: 0, fouls: 0, yellowCards: 0, redCards: 0 };
-
-  liveStatsStore.set(fixtureId, { fixtureId, home: homeStats, away: awayStats, ts: Date.now() });
+  liveStatsStore.set(fixtureId, {
+    fixtureId,
+    home: mapTeamStats(homeEntry.team?.name ?? "", homeEntry.statistics ?? []),
+    away: awayEntry
+      ? mapTeamStats(awayEntry.team?.name ?? "", awayEntry.statistics ?? [])
+      : EMPTY_TEAM_STATS(),
+    ts: Date.now(),
+  });
 }
 
-/** Worker 3 — re-fetches stats every 90 s for all currently-live fixtures. */
-async function runStatsWorker(): Promise<void> {
-  const ids = [...liveMatchesStore.keys()].slice(0, 8);
+// ── Events fetcher ─────────────────────────────────────────────────────────────
+
+async function fetchEventsForFixture(fixtureId: number): Promise<void> {
+  const existing = liveEventsStore.get(fixtureId);
+  if (existing && Date.now() - existing.ts < 55_000) return;
+
+  const json = await fetchLiveApi(`/fixtures/events?fixture=${fixtureId}`);
+  if (!json?.response) return;
+
+  const events: LiveEvent[] = (json.response as any[]).map(e => ({
+    minute:     e.time?.elapsed    ?? 0,
+    extra:      e.time?.extra      ?? null,
+    type:       e.type             ?? "",
+    detail:     e.detail           ?? "",
+    teamId:     e.team?.id         ?? 0,
+    teamName:   e.team?.name       ?? "",
+    playerName: e.player?.name     ?? null,
+    assistName: e.assist?.name     ?? null,
+  }));
+
+  liveEventsStore.set(fixtureId, { fixtureId, events, ts: Date.now() });
+}
+
+// ── Priority sorter ────────────────────────────────────────────────────────────
+
+function prioritisedIds(): number[] {
+  const all = [...liveMatchesStore.values()];
+  all.sort((a, b) => {
+    const ap = PRIORITY_LEAGUE_IDS.has(a.leagueId) ? 0 : 1;
+    const bp = PRIORITY_LEAGUE_IDS.has(b.leagueId) ? 0 : 1;
+    return ap - bp;
+  });
+  return all.slice(0, MAX_LIVE_FIXTURES).map(m => m.fixtureId);
+}
+
+// ── Worker 3 — stats + events every 60 s ──────────────────────────────────────
+
+async function runLiveDataWorker(): Promise<void> {
+  const ids = prioritisedIds();
   if (ids.length === 0) return;
-  await Promise.allSettled(ids.map(fetchStatsForFixture));
-  console.log(`[live-engine] Stats worker — refreshed ${liveStatsStore.size}/${ids.length} fixtures`);
+
+  // Interleave stats + events to spread API calls
+  const tasks: Promise<void>[] = [];
+  for (const id of ids) {
+    tasks.push(fetchStatsForFixture(id));
+    tasks.push(fetchEventsForFixture(id));
+  }
+  await Promise.allSettled(tasks);
+
+  console.log(
+    `[live-engine] worker — ${ids.length} fixtures | ` +
+    `stats: ${liveStatsStore.size} | events: ${liveEventsStore.size}`
+  );
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /**
- * Called by the existing refreshLiveMatches() worker in football-api.ts after
- * it has successfully fetched /fixtures?live=all. Processes the raw API response
- * and updates the in-memory store. Zero extra API cost.
+ * Called by refreshLiveMatches() in football-api.ts every 60 s.
+ * Parses raw /fixtures?live=all response, updates the store, evicts stale entries,
+ * and triggers background fetch of stats+events for new/priority matches.
  */
 export function updateFromApiResponse(fixtures: any[]): void {
   if (!Array.isArray(fixtures)) return;
@@ -143,6 +248,8 @@ export function updateFromApiResponse(fixtures: any[]): void {
       fixtureId:    id,
       homeTeam:     f.teams?.home?.name  ?? "",
       awayTeam:     f.teams?.away?.name  ?? "",
+      homeTeamId:   f.teams?.home?.id    ?? 0,
+      awayTeamId:   f.teams?.away?.id    ?? 0,
       homeTeamLogo: f.teams?.home?.logo  ?? "",
       awayTeamLogo: f.teams?.away?.logo  ?? "",
       homeScore:    f.goals?.home        ?? 0,
@@ -150,8 +257,8 @@ export function updateFromApiResponse(fixtures: any[]): void {
       league:       f.league?.name       ?? "",
       leagueId:     f.league?.id         ?? 0,
       leagueLogo:   f.league?.logo       ?? "",
-      status:       f.fixture?.status?.short    ?? "",
-      elapsed:      f.fixture?.status?.elapsed  ?? null,
+      status:       f.fixture?.status?.short   ?? "",
+      elapsed:      f.fixture?.status?.elapsed ?? null,
       ts:           Date.now(),
     });
   }
@@ -161,23 +268,30 @@ export function updateFromApiResponse(fixtures: any[]): void {
     if (!currentIds.has(id)) {
       liveMatchesStore.delete(id);
       liveStatsStore.delete(id);
+      liveEventsStore.delete(id);
     }
   }
 
-  // Fetch stats for up to 8 live matches (background, no await)
-  const toFetch = [...currentIds].slice(0, 8);
-  if (toFetch.length > 0) {
-    Promise.allSettled(toFetch.map(fetchStatsForFixture)).then(() => {
-      console.log(`[live-engine] ${liveMatchesStore.size} live matches, ${liveStatsStore.size} with stats`);
+  // Background: fetch stats + events for priority matches
+  const ids = prioritisedIds();
+  if (ids.length > 0) {
+    const tasks = [
+      ...ids.map(fetchStatsForFixture),
+      ...ids.map(fetchEventsForFixture),
+    ];
+    Promise.allSettled(tasks).then(() => {
+      console.log(
+        `[live-engine] ${liveMatchesStore.size} live | ` +
+        `${liveStatsStore.size} stats | ${liveEventsStore.size} events`
+      );
     });
   }
 }
 
-/** Call once at server startup to start the background stats refresh worker. */
+/** Call once at server startup. */
 export function startLiveEngine(): void {
-  // Worker 3: refresh stats for live fixtures every 90 s
-  setInterval(runStatsWorker, 90_000);
-  console.log("[live-engine] stats worker started (90 s interval)");
+  setInterval(runLiveDataWorker, 60_000);
+  console.log("[live-engine] data worker started (stats + events, 60 s interval)");
 }
 
 export function getLiveMatches(): LiveFixture[] {
@@ -190,6 +304,10 @@ export function getLiveMatches(): LiveFixture[] {
 
 export function getLiveStats(fixtureId: number): LiveMatchStats | null {
   return liveStatsStore.get(fixtureId) ?? null;
+}
+
+export function getLiveEvents(fixtureId: number): LiveMatchEvents | null {
+  return liveEventsStore.get(fixtureId) ?? null;
 }
 
 export function getLiveCount(): number {

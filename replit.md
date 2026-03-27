@@ -4,6 +4,27 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 11 — Live Match System Overhaul)
+
+- **live-engine.ts** (full rewrite):
+  - Added `LiveEvent` + `LiveMatchEvents` interfaces; `liveEventsStore` Map; `fetchEventsForFixture()` — calls `fixtures/events?fixture={id}`, parses goals/cards/VAR/substitutions/assists
+  - Added `homeTeamId` + `awayTeamId` to `LiveFixture` so timeline can determine home vs away alignment
+  - Fixed `fetchStatsForFixture()` smart retry: fresh data + has stats → skip 55s; empty stats → retry after 20s; stamps empty entry to avoid hammering the API
+  - `EMPTY_TEAM_STATS()` helper fixes missing `dangerousAttacks` in fallback away-team object
+  - `PRIORITY_LEAGUE_IDS` set (top-6 + UCL/UEL/UECL + CONMEBOL cups + tier-2) used to sort matches for per-cycle processing
+  - `MAX_LIVE_FIXTURES = 20` hard cap per worker cycle (API budget protection)
+  - Worker 3 renamed to `runLiveDataWorker` — fetches stats + events for all priority matches every **60 s** (previously 90 s, stats only, capped at 8)
+  - `updateFromApiResponse` evicts events store when match ends; triggers background stats+events fetch on every fixture refresh cycle
+  - New export: `getLiveEvents(fixtureId)`
+- **football-api.ts** `/live/matches`: imports `getLiveEvents`; embeds `events` array + `eventsStale` flag + `statsStale` flag + `ts` timestamp in each match response; ghost stats (all-zero) filtered from response so frontend never shows incorrect zeros
+- **LiveMatchesSection.tsx** (full rewrite):
+  - `LiveEvent` type + `homeTeamId`/`awayTeamId` on `LiveMatch` interface
+  - `LiveTimeline` component: chronological timeline of goals/cards/VAR; home vs away alignment based on `teamId`; shows player name + assist; substitutions filtered out
+  - Loading state: spinner + "Carregando estatísticas ao vivo..." when stats not yet available
+  - Stale warning: `AlertTriangle` + "Dados ao vivo atualizando..." shown on section header when query data is > 90s old; per-match stale warnings for stats + events
+  - `retry: 2` on react-query to recover from transient API failures
+  - All previous features preserved: GPI engine, Momentum Bars, Goal Alert, Hot Match Scanner, Goal Probabilities
+
 ## Recent Changes (Session 10 — Live Intelligence Engine Upgrade)
 
 - **live-engine.ts**: Added `dangerousAttacks` field to `TeamStats` interface; `mapTeamStats()` now parses "Dangerous Attacks" stat from API-Football `/fixtures/statistics` response

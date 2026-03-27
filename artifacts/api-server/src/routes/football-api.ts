@@ -12,6 +12,7 @@ import {
   updateFromApiResponse,
   getLiveMatches,
   getLiveStats,
+  getLiveEvents,
   getLiveCount,
   type LiveFixture,
   type LiveMatchStats,
@@ -2721,18 +2722,30 @@ router.get("/scanner/opportunities", async (_req, res) => {
 });
 
 // ── GET /live/matches ─────────────────────────────────────────────────────────
-// Returns all currently live fixtures with scores + stats (from live engine).
+// Returns all currently live fixtures with scores, stats, and events.
 router.get("/live/matches", (_req, res) => {
   const matches = getLiveMatches();
+  const ts = Date.now();
   if (matches.length === 0) {
-    return res.json({ available: false, count: 0, matches: [] });
+    return res.json({ available: false, count: 0, matches: [], ts });
   }
-  // Attach stats snapshot to each match
-  const enriched = matches.map(m => ({
-    ...m,
-    stats: getLiveStats(m.fixtureId) ?? null,
-  }));
-  return res.json({ available: true, count: enriched.length, matches: enriched });
+  const enriched = matches.map(m => {
+    const stats  = getLiveStats(m.fixtureId);
+    const evData = getLiveEvents(m.fixtureId);
+    // Only expose stats if they contain real data (no all-zero ghost entries)
+    const hasRealStats = stats && (
+      stats.home.shots > 0 || stats.away.shots > 0 ||
+      stats.home.shotsOnTarget > 0 || stats.home.corners > 0
+    );
+    return {
+      ...m,
+      stats:       hasRealStats ? stats : null,
+      statsStale:  stats ? (ts - stats.ts > 90_000) : false,
+      events:      evData?.events ?? null,
+      eventsStale: evData ? (ts - evData.ts > 90_000) : false,
+    };
+  });
+  return res.json({ available: true, count: enriched.length, matches: enriched, ts });
 });
 
 // ── GET /live/stats/:fixtureId ────────────────────────────────────────────────
