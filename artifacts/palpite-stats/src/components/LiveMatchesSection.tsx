@@ -1004,6 +1004,266 @@ function HotMatchCard({ match, rank }: { match: EnrichedMatch; rank: number }) {
   );
 }
 
+// ── PRO Live Goal Scanner ─────────────────────────────────────────────────────
+// Uses a separate GPS (Goal Pressure Score) formula — independent from GPI,
+// calcGoalProbs, detectOpportunities, and usePressureScanner.
+// Data source: enriched matches already in memory (no extra API calls).
+// Refreshes automatically whenever live data updates (every ~60 s via WS/poll).
+
+type GoalPressureLevel = "very_high" | "high" | "moderate" | "none";
+
+interface GoalScannerResult {
+  fixtureId:    number;
+  homeTeam:     string;
+  awayTeam:     string;
+  homeTeamLogo: string;
+  awayTeamLogo: string;
+  homeScore:    number;
+  awayScore:    number;
+  league:       string;
+  leagueLogo:   string;
+  elapsed:      number | null;
+  status:       string;
+  gps:          number;          // 0–100 Goal Pressure Score
+  level:        GoalPressureLevel;
+  levelLabel:   string;
+  dominantTeam: string;          // team driving the highest pressure
+  // Raw stats for the Attack Radar
+  homeDA:    number;   awayDA:    number;   maxDA:    number;
+  homeShots: number;   awayShots: number;   maxShots: number;
+  homeSoT:   number;   awaySoT:   number;   maxSoT:   number;
+}
+
+/**
+ * GPS formula (0–100):
+ *   SoT × 35% + Shots × 20% + DA × 20% + Corners × 15% + Possession × 10%
+ * Each component is normalised against a realistic max (SoT 8, Shots 15, DA 30, Corners 8).
+ */
+function calcTeamGPS(stats: TeamStats): number {
+  const possNum = parseInt(stats.possession) || 0;
+  return Math.min(100, Math.round(
+    Math.min(35, (stats.shotsOnTarget              / 8)  * 35) +
+    Math.min(20, (stats.shots                      / 15) * 20) +
+    Math.min(20, ((stats.dangerousAttacks ?? 0)    / 30) * 20) +
+    Math.min(15, (stats.corners                    / 8)  * 15) +
+    (possNum / 100) * 10
+  ));
+}
+
+/** Computes the full GPS for a match including context bonuses. */
+function computeMatchGPS(match: EnrichedMatch): GoalScannerResult | null {
+  if (!match.stats) return null;
+
+  const homeBase      = calcTeamGPS(match.stats.home);
+  const awayBase      = calcTeamGPS(match.stats.away);
+  const dominantIsHome = homeBase >= awayBase;
+  const dominantTeam  = dominantIsHome ? match.homeTeam : match.awayTeam;
+  let gps             = Math.max(homeBase, awayBase);
+
+  // ── Context factors (additive bonuses) ───────────────────────────────────
+  // Factor 1: late game (minute > 60) → +5
+  if (match.elapsed !== null && match.elapsed > 60) gps += 5;
+  // Factor 2: one-goal margin (teams are fighting) → +3
+  if (Math.abs(match.homeScore - match.awayScore) === 1) gps += 3;
+  // Factor 3: losing team is the dominant attacker (motivation to equalise) → +4
+  const homeIsLosing = match.homeScore < match.awayScore;
+  const awayIsLosing = match.awayScore < match.homeScore;
+  if ((dominantIsHome && homeIsLosing) || (!dominantIsHome && awayIsLosing)) gps += 4;
+
+  gps = Math.min(100, gps);
+
+  let level: GoalPressureLevel;
+  let levelLabel: string;
+  if      (gps >= 80) { level = "very_high"; levelLabel = "🔥 Probabilidade Muito Alta"; }
+  else if (gps >= 70) { level = "high";      levelLabel = "Alta Probabilidade de Gol";   }
+  else if (gps >= 60) { level = "moderate";  levelLabel = "Pressão Moderada";            }
+  else                { level = "none";      levelLabel = "";                             }
+
+  const homeDA    = match.stats.home.dangerousAttacks ?? 0;
+  const awayDA    = match.stats.away.dangerousAttacks ?? 0;
+  const homeShots = match.stats.home.shots;
+  const awayShots = match.stats.away.shots;
+  const homeSoT   = match.stats.home.shotsOnTarget;
+  const awaySoT   = match.stats.away.shotsOnTarget;
+
+  return {
+    fixtureId: match.fixtureId, homeTeam: match.homeTeam, awayTeam: match.awayTeam,
+    homeTeamLogo: match.homeTeamLogo, awayTeamLogo: match.awayTeamLogo,
+    homeScore: match.homeScore, awayScore: match.awayScore,
+    league: match.league, leagueLogo: match.leagueLogo,
+    elapsed: match.elapsed, status: match.status,
+    gps, level, levelLabel, dominantTeam,
+    homeDA, awayDA, maxDA: Math.max(homeDA, awayDA, 1),
+    homeShots, awayShots, maxShots: Math.max(homeShots, awayShots, 1),
+    homeSoT, awaySoT, maxSoT: Math.max(homeSoT, awaySoT, 1),
+  };
+}
+
+/** Dual horizontal bar comparing one stat between home and away team. */
+function AttackRadar({
+  label, home, away, max,
+}: { label: string; home: number; away: number; max: number }) {
+  const homePct = Math.round((home / max) * 100);
+  const awayPct = Math.round((away / max) * 100);
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[8px] text-white/20 w-14 text-right truncate flex-shrink-0 leading-none">
+        {label}
+      </span>
+      {/* Home bar — grows right */}
+      <div className="flex-1 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+        <div
+          className="h-full rounded-full bg-blue-400/60 transition-all duration-700"
+          style={{ width: `${homePct}%` }}
+        />
+      </div>
+      <div className="flex items-center gap-0.5 text-[8px] tabular-nums text-white/25 w-8 text-center flex-shrink-0">
+        <span>{home}</span><span className="text-white/10">·</span><span>{away}</span>
+      </div>
+      {/* Away bar — grows left */}
+      <div className="flex-1 h-1.5 rounded-full bg-white/[0.06] overflow-hidden flex justify-end">
+        <div
+          className="h-full rounded-full bg-purple-400/60 transition-all duration-700"
+          style={{ width: `${awayPct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Single scanner entry card. */
+function ScannerCard({ result }: { result: GoalScannerResult }) {
+  const label      = statusLabel(result.status, result.elapsed);
+  const isAlert    = result.gps >= 75;
+  const isHigh     = result.gps >= 70;
+  const gpsColor   = result.gps >= 80 ? "text-red-400" : result.gps >= 70 ? "text-amber-400" : "text-yellow-400/80";
+  const gpsBorder  = result.gps >= 80 ? "bg-red-500/10 border-red-500/25" : result.gps >= 70 ? "bg-amber-500/10 border-amber-500/25" : "bg-yellow-500/10 border-yellow-500/20";
+  const barColor   = result.gps >= 80 ? "bg-red-500" : result.gps >= 70 ? "bg-amber-500" : "bg-yellow-500";
+
+  return (
+    <div className={cn(
+      "rounded-xl border p-2.5 space-y-2",
+      isHigh ? "border-amber-500/20 bg-amber-500/[0.03]" : "border-white/[0.07] bg-white/[0.02]"
+    )}>
+      {/* 🚨 Alert row */}
+      {isAlert && (
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] font-black text-red-400 animate-pulse">🚨 Gol Possível em Breve</span>
+        </div>
+      )}
+
+      {/* Match header */}
+      <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0 space-y-0.5">
+          <div className="flex items-center gap-1">
+            {result.homeTeamLogo && (
+              <img src={result.homeTeamLogo} alt="" className="w-3.5 h-3.5 object-contain flex-shrink-0" loading="lazy" />
+            )}
+            <span className="text-[11px] font-semibold text-white truncate">{result.homeTeam}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            {result.awayTeamLogo && (
+              <img src={result.awayTeamLogo} alt="" className="w-3.5 h-3.5 object-contain flex-shrink-0" loading="lazy" />
+            )}
+            <span className="text-[11px] text-white/60 truncate">{result.awayTeam}</span>
+          </div>
+        </div>
+
+        {/* Score + minute */}
+        <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+          <span className="text-sm font-black text-white tabular-nums">
+            {result.homeScore}–{result.awayScore}
+          </span>
+          <span className="text-[8.5px] text-red-400 font-bold tabular-nums">{label}</span>
+        </div>
+
+        {/* GPS badge */}
+        <div className={cn("rounded-lg border px-2 py-1 text-center flex-shrink-0 min-w-[42px]", gpsBorder)}>
+          <div className="text-[7px] text-white/25 uppercase tracking-wide leading-none mb-0.5">GPS</div>
+          <div className={cn("text-sm font-black tabular-nums leading-none", gpsColor)}>{result.gps}</div>
+        </div>
+      </div>
+
+      {/* Pressure level label */}
+      {result.levelLabel && (
+        <div className="text-[10px] text-white/40 leading-none">{result.levelLabel}</div>
+      )}
+
+      {/* GPS progress bar */}
+      <div className="space-y-0.5">
+        <div className="h-1.5 rounded-full bg-white/[0.05] overflow-hidden">
+          <div
+            className={cn("h-full rounded-full transition-all duration-700", barColor)}
+            style={{ width: `${result.gps}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-[7.5px] text-white/15">
+          <span>Pressão de Gol</span>
+          <span>{result.gps}/100</span>
+        </div>
+      </div>
+
+      {/* Attack Radar */}
+      <div className="space-y-1 pt-1 border-t border-white/[0.04]">
+        <div className="flex items-center justify-between">
+          <span className="text-[7.5px] text-white/15 uppercase tracking-widest">Radar de Ataque</span>
+          <div className="flex items-center gap-2 text-[7px] text-white/15">
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-sm bg-blue-400/50 inline-block" />
+              {result.homeTeam.split(" ")[0]}
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-sm bg-purple-400/50 inline-block" />
+              {result.awayTeam.split(" ")[0]}
+            </span>
+          </div>
+        </div>
+        <AttackRadar label="At. Perigosos" home={result.homeDA}    away={result.awayDA}    max={result.maxDA}    />
+        <AttackRadar label="Finalizações"  home={result.homeShots} away={result.awayShots} max={result.maxShots} />
+        <AttackRadar label="No Alvo"       home={result.homeSoT}   away={result.awaySoT}   max={result.maxSoT}   />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * PRO Live Goal Scanner — shows top 5 matches by GPS score (≥ 60).
+ * Reads from already-enriched matches; no extra API calls; data cached 60 s by WS/poll.
+ */
+function LiveGoalScanner({ matches }: { matches: EnrichedMatch[] }) {
+  const scanResults = useMemo<GoalScannerResult[]>(() => {
+    return matches
+      .map(computeMatchGPS)
+      .filter((r): r is GoalScannerResult => r !== null && r.level !== "none")
+      .sort((a, b) => b.gps - a.gps)
+      .slice(0, 5);          // top 5 as specified
+  }, [matches]);
+
+  if (scanResults.length === 0) return null;
+
+  return (
+    <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.02] p-3 space-y-2">
+      {/* Header */}
+      <div className="flex items-center gap-1.5">
+        <span className="text-sm">🔥</span>
+        <span className="text-[10px] font-bold text-red-400 uppercase tracking-widest">
+          Scanner de Gols ao Vivo
+        </span>
+        <span className="ml-auto text-[8px] text-white/15 tabular-nums">
+          top {scanResults.length} · GPS 0–100
+        </span>
+      </div>
+
+      {/* Cards */}
+      <div className="space-y-2">
+        {scanResults.map(result => (
+          <ScannerCard key={result.fixtureId} result={result} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── WebSocket hook ─────────────────────────────────────────────────────────────
 /**
  * Connects to the live WebSocket server. When the server pushes a live:update
@@ -1172,6 +1432,9 @@ export default function LiveMatchesSection() {
       {enrichedMatches.length > 0 && (
         <LiveOpportunityRadar matches={enrichedMatches} />
       )}
+
+      {/* ── 🔥 PRO Live Goal Scanner ── */}
+      <LiveGoalScanner matches={enrichedMatches} />
 
       {/* ── 🔥 Hot Match Scanner ── */}
       {hotMatches.length > 0 && (
