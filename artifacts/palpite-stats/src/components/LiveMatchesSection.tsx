@@ -140,6 +140,63 @@ function calcGoalProbs(elapsed: number, matchGPI: number, totalGoals: number) {
   };
 }
 
+/**
+ * Stats-based pressure score (0–100) using the specified live-stats weights.
+ * Formula:  SoT × 35%  +  Shots × 25%  +  DA × 20%  +  Corners × 10%  +  Possession × 10%
+ *
+ * Deliberately uses different weights from calcTeamGPI (GPI: SoT 40% Shots 20% Corners 15%
+ * Poss 15% DA 10%) and from calcTeamGPS (GPS: SoT 35% Shots 20% DA 20% Corners 15% Poss 10%).
+ * These three formulas are intentionally independent — each serves a different feature.
+ */
+function calcStatsPressure(stats: TeamStats): number {
+  const possNum = parseInt(stats.possession) || 0;
+  return Math.min(100, Math.round(
+    Math.min(35, (stats.shotsOnTarget           / 8)  * 35) +
+    Math.min(25, (stats.shots                   / 15) * 25) +
+    Math.min(20, ((stats.dangerousAttacks ?? 0) / 30) * 20) +
+    Math.min(10, (stats.corners                 / 8)  * 10) +
+    (possNum / 100) * 10
+  ));
+}
+
+/**
+ * Enhanced goal probabilities = Poisson baseline (calcGoalProbs) + stats pressure boost.
+ *
+ * calcGoalProbs() is UNCHANGED — it remains the foundation.
+ * This function adds an additive boost to each Over market when live stats
+ * show meaningful pressure above the specified threshold.
+ *
+ * Thresholds (as specified):
+ *   pressure ≥ 50 → boosts Over 0.5 (computed but not displayed — already near 100%)
+ *   pressure ≥ 65 → boosts Over 1.5   (up to +15 pp at pressure 100)
+ *   pressure ≥ 75 → boosts Over 2.5   (up to +12 pp at pressure 100)
+ *   pressure ≥ 85 → boosts Over 3.5   (up to +8 pp at pressure 100)
+ */
+function calcEnhancedGoalProbs(
+  elapsed:    number,
+  matchGPI:   number,
+  totalGoals: number,
+  stats: { home: TeamStats; away: TeamStats } | null
+) {
+  const base = calcGoalProbs(elapsed, matchGPI, totalGoals);
+  if (!stats) return base;
+
+  // Dominant team pressure (higher of home / away)
+  const pressure = Math.max(calcStatsPressure(stats.home), calcStatsPressure(stats.away));
+
+  // Linear boosts above each threshold, capped at realistic maximums
+  const over15Boost = pressure >= 65 ? Math.round((pressure - 65) * 0.43) : 0; // max ≈ +15
+  const over25Boost = pressure >= 75 ? Math.round((pressure - 75) * 0.48) : 0; // max ≈ +12
+  const over35Boost = pressure >= 85 ? Math.round((pressure - 85) * 0.53) : 0; // max ≈ +8
+
+  return {
+    nextGoal: base.nextGoal,                              // Poisson handles the 10-min window
+    over15:   Math.min(99, base.over15 + over15Boost),
+    over25:   Math.min(99, base.over25 + over25Boost),
+    over35:   Math.min(99, base.over35 + over35Boost),
+  };
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 const LIVE_STATUS_SET = new Set(["1H", "HT", "2H", "ET", "P", "BT"]);
@@ -782,8 +839,10 @@ function LiveMatchCard({ match, idx, pressureResult }: {
 
   const goalProbs = useMemo(() => {
     if (!hasStats || match.elapsed === null || match.elapsed >= 88) return null;
-    return calcGoalProbs(match.elapsed, match.matchGPI, total);
-  }, [hasStats, match.elapsed, match.matchGPI, total]);
+    // Enhanced: Poisson baseline + stats-based pressure boost (calcEnhancedGoalProbs)
+    // calcGoalProbs() is called internally — the Poisson model is untouched.
+    return calcEnhancedGoalProbs(match.elapsed, match.matchGPI, total, match.stats);
+  }, [hasStats, match.elapsed, match.matchGPI, total, match.stats]);
 
   return (
     <motion.div
