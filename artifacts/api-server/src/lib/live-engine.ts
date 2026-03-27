@@ -34,11 +34,12 @@ export interface TeamStats {
   team: string;
   shots: number;
   shotsOnTarget: number;
-  possession: string;   // "55%" format
+  possession: string;       // "55%" format
   corners: number;
   fouls: number;
   yellowCards: number;
   redCards: number;
+  dangerousAttacks: number; // API-Football "Dangerous Attacks" stat
 }
 
 export interface LiveMatchStats {
@@ -80,14 +81,15 @@ function extractStat(stats: any[], type: string): any {
 function mapTeamStats(teamName: string, stats: any[]): TeamStats {
   const possession = extractStat(stats, "Ball Possession");
   return {
-    team:          teamName,
-    shots:         Number(extractStat(stats, "Total Shots"))    || 0,
-    shotsOnTarget: Number(extractStat(stats, "Shots on Goal"))  || 0,
-    possession:    typeof possession === "string" ? possession : "0%",
-    corners:       Number(extractStat(stats, "Corner Kicks"))   || 0,
-    fouls:         Number(extractStat(stats, "Fouls"))          || 0,
-    yellowCards:   Number(extractStat(stats, "Yellow Cards"))   || 0,
-    redCards:      Number(extractStat(stats, "Red Cards"))      || 0,
+    team:             teamName,
+    shots:            Number(extractStat(stats, "Total Shots"))       || 0,
+    shotsOnTarget:    Number(extractStat(stats, "Shots on Goal"))     || 0,
+    possession:       typeof possession === "string" ? possession : "0%",
+    corners:          Number(extractStat(stats, "Corner Kicks"))      || 0,
+    fouls:            Number(extractStat(stats, "Fouls"))             || 0,
+    yellowCards:      Number(extractStat(stats, "Yellow Cards"))      || 0,
+    redCards:         Number(extractStat(stats, "Red Cards"))         || 0,
+    dangerousAttacks: Number(extractStat(stats, "Dangerous Attacks")) || 0,
   };
 }
 

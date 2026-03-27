@@ -4,6 +4,18 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 10 — Live Intelligence Engine Upgrade)
+
+- **live-engine.ts**: Added `dangerousAttacks` field to `TeamStats` interface; `mapTeamStats()` now parses "Dangerous Attacks" stat from API-Football `/fixtures/statistics` response
+- **LiveMatchesSection.tsx** (complete rewrite): Added Goal Pressure Index (GPI 0–100) engine; Poisson-based real-time goal probabilities; `enrichMatch()` computes homeGPI/awayGPI/matchGPI/goalAlert per match client-side — zero extra API calls
+  - **GPI formula**: SoT×40% + Shots×20% + Corners×15% + Possession dominance×15% + Dangerous Attacks×10%
+  - **🚨 Goal Alert**: Banner shown when matchGPI > 75 AND (maxShotsOnTarget ≥ 5 OR maxCorners ≥ 6)
+  - **Attacking Momentum Bars**: Per-team GPI bars with color coding (green→amber→red scale)
+  - **🔥 Hot Match Scanner**: Top 5 live matches ranked by highest GPI in collapsible orange panel
+  - **Real-time Goal Probabilities**: Poisson model computes "Next 10'" / "O1.5" / "O2.5" / "O3.5" live using elapsed time + matchGPI + current score; updates every 60s
+  - **GPI color bar** at top of each match card (green/amber/red based on intensity)
+  - All stats expandable per match via tap
+
 ## Recent Changes (Session 9 — League Expansion + AI Prediction Card)
 
 - **football-api.ts**: `TOP_LEAGUES` expanded to include all tier-2 domestic leagues (40 Championship, 141 La Liga 2, 79 2.Bundesliga, 136 Serie B Italy, 62 Ligue 2, 72 Série B Brazil) + Copa America (9), Copa Libertadores (13), Copa Sudamericana (11); `TOP_SIX_LEAGUES` expanded to 15 leagues covering tier-1, tier-2, and European cups; `SCANNER_LEAGUES` expanded to add all second-tier + South American cups (13, 11, 9, 73) + WC Qualifiers (31, 35); Copa do Brasil (73) added to SCANNER_LEAGUES
