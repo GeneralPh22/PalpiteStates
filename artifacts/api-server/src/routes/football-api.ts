@@ -2792,4 +2792,245 @@ router.get("/api-status", (_req, res) => {
   res.json({ suspended: apiSuspended, cacheSize: cache.size, liveCount: getLiveCount() });
 });
 
+// ── AI Betting Insights ────────────────────────────────────────────────────────
+// Generates daily top picks, safe multiple, and aggressive multiple.
+// Analysis is driven by cached team statistics — no extra API burst on each request.
+// Results are stored in a 24-hour in-memory cache; regenerated once per calendar day.
+
+interface InsightPick {
+  fixtureId:  number;
+  homeTeam:   string;
+  awayTeam:   string;
+  homeLogo:   string;
+  awayLogo:   string;
+  league:     { id: number; name: string; logo: string };
+  kickoff:    string;
+  betLabel:   string;   // display text, e.g. "Mais de 2.5 Gols"
+  betMarket:  string;   // machine key: over25 | over15 | btts | homeWin | awayWin | dc
+  confidence: number;   // 0–100
+  reasons:    string[]; // max 3 bullets
+}
+
+interface BettingInsights {
+  generatedAt:        string;
+  available:          boolean;
+  top3:               InsightPick[];
+  safeMultiple:       InsightPick[];
+  aggressiveMultiple: InsightPick[];
+}
+
+let insightsCache: { data: BettingInsights; ts: number } | null = null;
+const INSIGHTS_TTL   = 24 * 60 * 60 * 1000; // 24 hours
+let insightsRunning  = false;
+
+/** Form string → score 0–100 (last 5 games, W=3 D=1 L=0, max 15). */
+function parseFormScore(form: string): number {
+  const last5  = (form ?? "").slice(-5);
+  if (!last5) return 50;
+  const pts    = last5.split("").reduce((acc, c) => acc + (c === "W" ? 3 : c === "D" ? 1 : 0), 0);
+  const maxPts = last5.length * 3;
+  return maxPts > 0 ? Math.round((pts / maxPts) * 100) : 50;
+}
+
+/**
+ * Generates betting insights from today's not-started top-league fixtures.
+ * Fetches team season statistics (already cached by warmupFeaturedCache in most cases).
+ * No H2H calls — quota is preserved.
+ */
+async function generateBettingInsights(): Promise<BettingInsights> {
+  const { fixtures } = await getFixturesFromDB();
+  const today = new Date().toISOString().split("T")[0]!;
+
+  // Filter: today's not-started fixtures from top leagues, max 30 sorted by league priority
+  const candidates = fixtures
+    .filter(f => {
+      const fDate = f.date?.split("T")[0];
+      return fDate === today && ["NS", "TBD"].includes(f.status.short) && TOP_LEAGUES.includes(f.league.id);
+    })
+    .sort((a, b) => {
+      const ai = TOP_LEAGUES.indexOf(a.league.id);
+      const bi = TOP_LEAGUES.indexOf(b.league.id);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    })
+    .slice(0, 30);
+
+  console.log(`[betting-insights] Analyzing ${candidates.length} fixtures for today`);
+
+  const picks: InsightPick[] = [];
+
+  for (const f of candidates) {
+    if (apiSuspended) break;
+
+    // Team stats — shared cache, likely already warm from warmupFeaturedCache
+    const [{ data: homeData }, { data: awayData }] = await Promise.all([
+      apiFetch(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+      apiFetch(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+    ]);
+
+    const hR = homeData?.response;
+    const aR = awayData?.response;
+    if (!hR || !aR) continue;
+
+    // ── Raw stat extraction ───────────────────────────────────────────────────
+    const homeForm     = hR.form ?? "";
+    const awayForm     = aR.form ?? "";
+    const hGoalsFor    = parseFloat(hR.goals?.for?.average?.total     ?? "1.3");
+    const aGoalsFor    = parseFloat(aR.goals?.for?.average?.total     ?? "1.3");
+    const hGoalsAg     = parseFloat(hR.goals?.against?.average?.total ?? "1.0");
+    const aGoalsAg     = parseFloat(aR.goals?.against?.average?.total ?? "1.0");
+    const hSoT         = parseFloat(hR.shots_on_goal?.average         ?? "4.0");
+    const aSoT         = parseFloat(aR.shots_on_goal?.average         ?? "4.0");
+    const hWins        = hR.fixtures?.wins?.total ?? 0;
+    const hPlayed      = Math.max(1, hR.fixtures?.played?.total ?? 1);
+
+    // ── Confidence components (each 0–100) ───────────────────────────────────
+    // 1. Team form → 30%
+    const formScore  = (parseFormScore(homeForm) + parseFormScore(awayForm)) / 2;
+
+    // 2. Goals average → 25%
+    const avgGoalsTotal = hGoalsFor + aGoalsFor;
+    const goalsScore    = Math.min(100, (avgGoalsTotal / 3.5) * 100);
+
+    // 3. Shots on target → 20%
+    const avgSoT     = (hSoT + aSoT) / 2;
+    const shotsScore = Math.min(100, (avgSoT / 7.0) * 100);
+
+    // 4. Head-to-head → 15% (proxy: season home win-rate)
+    const homeWinRate = hWins / hPlayed;
+    const h2hProxy    = Math.min(100, Math.round(homeWinRate * 100 + 10));
+
+    // 5. Home advantage → 10%
+    const homeAdv = Math.min(100, Math.round(homeWinRate * 80 + 20));
+
+    const baseConfidence = Math.round(
+      formScore  * 0.30 +
+      goalsScore * 0.25 +
+      shotsScore * 0.20 +
+      h2hProxy   * 0.15 +
+      homeAdv    * 0.10
+    );
+
+    // ── Market probabilities (Poisson) ───────────────────────────────────────
+    const probs      = calcMatchProbabilities(hGoalsFor, hGoalsAg, aGoalsFor, aGoalsAg).probabilities;
+    const leagueAvg  = 1.35;
+    const lH         = (hGoalsFor * aGoalsAg) / leagueAvg;
+    const lA         = (aGoalsFor * hGoalsAg) / leagueAvg;
+    const totalLam   = lH + lA;
+    const over15p    = Math.min(0.97, 1 - poissonProb(totalLam, 0) - poissonProb(totalLam, 1));
+    const dcProb     = Math.min(0.95, probs.homeWin + probs.draw);
+
+    const markets: Array<{ key: string; label: string; prob: number }> = [
+      { key: "homeWin", label: `${f.homeTeam.name} Ganha`,    prob: probs.homeWin },
+      { key: "awayWin", label: `${f.awayTeam.name} Ganha`,    prob: probs.awayWin },
+      { key: "over25",  label: "Mais de 2.5 Gols",            prob: probs.over25  },
+      { key: "over15",  label: "Mais de 1.5 Gols",            prob: over15p       },
+      { key: "btts",    label: "Ambas Marcam",                 prob: probs.btts    },
+      { key: "dc",      label: "Dupla Hipótese (Casa/Emp.)",   prob: dcProb        },
+    ].sort((a, b) => b.prob - a.prob);
+
+    const best = markets[0]!;
+
+    // Blend formula score + market probability
+    const confidence = Math.min(98, Math.round(baseConfidence * 0.60 + Math.round(best.prob * 100) * 0.40));
+
+    // ── Reasons ──────────────────────────────────────────────────────────────
+    const reasons: string[] = [];
+    if (formScore >= 60)
+      reasons.push(`Boa forma recente (${homeForm.slice(-5) || "–"} / ${awayForm.slice(-5) || "–"})`);
+    if (avgGoalsTotal >= 2.5)
+      reasons.push(`Média combinada de ${avgGoalsTotal.toFixed(1)} gols/jogo`);
+    if (avgSoT >= 4.0)
+      reasons.push(`${avgSoT.toFixed(1)} finalizações no alvo por jogo`);
+    if (best.key === "homeWin" && homeWinRate >= 0.5)
+      reasons.push(`${f.homeTeam.name} vence ${Math.round(homeWinRate * 100)}% dos jogos`);
+    if (best.key === "btts" && probs.btts >= 0.55)
+      reasons.push(`${Math.round(probs.btts * 100)}% de chance de ambas marcarem`);
+    if (best.key === "over25" && probs.over25 >= 0.60)
+      reasons.push(`${Math.round(probs.over25 * 100)}% de probabilidade O2.5`);
+    if (reasons.length === 0)
+      reasons.push(`Análise de dados — ${f.league.name} temporada 2025`);
+
+    picks.push({
+      fixtureId:  f.id,
+      homeTeam:   f.homeTeam.name,
+      awayTeam:   f.awayTeam.name,
+      homeLogo:   f.homeTeam.logo,
+      awayLogo:   f.awayTeam.logo,
+      league:     { id: f.league.id, name: f.league.name, logo: f.league.logo },
+      kickoff:    f.date,
+      betLabel:   best.label,
+      betMarket:  best.key,
+      confidence,
+      reasons:    reasons.slice(0, 3),
+    });
+  }
+
+  picks.sort((a, b) => b.confidence - a.confidence);
+
+  // Top 3 AI Picks: any market, confidence >= 75
+  const top3 = picks.filter(p => p.confidence >= 75).slice(0, 3);
+
+  // Safe Multiple: 3 picks, confidence >= 70, low-risk markets
+  const safeKeys = new Set(["over15", "dc", "homeWin"]);
+  const safeMultiple = picks.filter(p => p.confidence >= 70 && safeKeys.has(p.betMarket)).slice(0, 3);
+
+  // Aggressive Multiple: 5 picks, confidence >= 65, higher-variance markets
+  const aggKeys = new Set(["over25", "btts", "homeWin", "awayWin"]);
+  const aggressiveMultiple = picks.filter(p => p.confidence >= 65 && aggKeys.has(p.betMarket)).slice(0, 5);
+
+  const result: BettingInsights = {
+    generatedAt: new Date().toISOString(),
+    available:   picks.length > 0,
+    top3,
+    safeMultiple,
+    aggressiveMultiple,
+  };
+
+  console.log(
+    `[betting-insights] Done — ${result.top3.length} top picks | ` +
+    `${result.safeMultiple.length} safe | ${result.aggressiveMultiple.length} aggressive`
+  );
+  return result;
+}
+
+// ── Route: GET /betting-insights ──────────────────────────────────────────────
+router.get("/betting-insights", async (_req, res) => {
+  // Serve from 24-hour cache
+  if (insightsCache && Date.now() - insightsCache.ts < INSIGHTS_TTL) {
+    return res.json(insightsCache.data);
+  }
+
+  // Prevent concurrent generation
+  if (insightsRunning) {
+    const empty: BettingInsights = {
+      generatedAt: new Date().toISOString(), available: false,
+      top3: [], safeMultiple: [], aggressiveMultiple: [],
+    };
+    return res.json(insightsCache?.data ?? empty);
+  }
+
+  insightsRunning = true;
+  try {
+    const data = await generateBettingInsights();
+    insightsCache = { data, ts: Date.now() };
+    return res.json(data);
+  } catch (err: any) {
+    console.error("[betting-insights] Generation failed:", err.message);
+    const fallback: BettingInsights = {
+      generatedAt: new Date().toISOString(), available: false,
+      top3: [], safeMultiple: [], aggressiveMultiple: [],
+    };
+    return res.json(insightsCache?.data ?? fallback);
+  } finally {
+    insightsRunning = false;
+  }
+});
+
+// Warm up 35 s after startup — after featured cache (12 s) and prelive refresh (8 s)
+setTimeout(() => {
+  generateBettingInsights()
+    .then(data => { insightsCache = { data, ts: Date.now() }; })
+    .catch(() => {});
+}, 35_000);
+
 export default router;

@@ -28,6 +28,7 @@ import {
 import { cn, formatProbability } from "@/lib/utils";
 import { MatchInsights } from "@/components/MatchInsights";
 import AccumulatorSection from "@/components/AccumulatorSection";
+import BettingInsightsSection from "@/components/BettingInsightsSection";
 import LiveMatchesSection from "@/components/LiveMatchesSection";
 import { sortMatchesByLeague } from "@/lib/leaguePriority";
 import { useFavoriteLeagues } from "@/hooks/useFavoriteLeagues";
@@ -1015,6 +1016,9 @@ export default function Home() {
         <FavoriteLeaguesSection allMatches={allMatches} />
         <TopBetsSection />
         <AccumulatorSection />
+
+        {/* Step 2b — AI Betting Insights (daily picks, safe & aggressive multiples) */}
+        <BettingInsightsSection />
 
         {/* Step 3 — Statistics & goal analysis */}
         <GoalProbabilitySection />
