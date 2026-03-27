@@ -2839,13 +2839,19 @@ function parseFormScore(form: string): number {
  */
 async function generateBettingInsights(): Promise<BettingInsights> {
   const { fixtures } = await getFixturesFromDB();
-  const today = new Date().toISOString().split("T")[0]!;
 
-  // Filter: today's not-started fixtures from top leagues, max 30 sorted by league priority
+  // Filter: not-started top-league fixtures within the next 24 hours.
+  // Using a rolling 24-h window (instead of calendar-day "today") keeps the
+  // insights useful late in the day when most daytime matches have already started.
+  const nowMs  = Date.now();
+  const in24hMs = nowMs + 24 * 60 * 60 * 1000;
   const candidates = fixtures
     .filter(f => {
-      const fDate = f.date?.split("T")[0];
-      return fDate === today && ["NS", "TBD"].includes(f.status.short) && TOP_LEAGUES.includes(f.league.id);
+      if (!f.date) return false;
+      const kickoff = new Date(f.date).getTime();
+      return kickoff >= nowMs && kickoff <= in24hMs
+          && ["NS", "TBD"].includes(f.status.short)
+          && TOP_LEAGUES.includes(f.league.id);
     })
     .sort((a, b) => {
       const ai = TOP_LEAGUES.indexOf(a.league.id);
@@ -2859,12 +2865,12 @@ async function generateBettingInsights(): Promise<BettingInsights> {
   const picks: InsightPick[] = [];
 
   for (const f of candidates) {
-    if (apiSuspended) break;
-
-    // Team stats — shared cache, likely already warm from warmupFeaturedCache
+    // AI Betting Module uses apiFetchPlayer (never writes apiSuspended) so that
+    // a rate-limit hit here cannot cascade and freeze the Fixture or Match Data modules.
+    // Shared cache Map means cache hits are free regardless of which function fetches first.
     const [{ data: homeData }, { data: awayData }] = await Promise.all([
-      apiFetch(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
-      apiFetch(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+      apiFetchPlayer(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+      apiFetchPlayer(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
     ]);
 
     const hR = homeData?.response;
@@ -3026,11 +3032,59 @@ router.get("/betting-insights", async (_req, res) => {
   }
 });
 
-// Warm up 35 s after startup — after featured cache (12 s) and prelive refresh (8 s)
-setTimeout(() => {
-  generateBettingInsights()
-    .then(data => { insightsCache = { data, ts: Date.now() }; })
-    .catch(() => {});
-}, 35_000);
+// ── GET /modules/status ────────────────────────────────────────────────────────
+// Health report for all four independent modules.  Useful for monitoring and debugging.
+// Returns the current state of each module without triggering any API calls.
+router.get("/modules/status", (_req, res) => {
+  const now = Date.now();
+
+  // Live Module — driven by live-engine
+  const liveCount  = getLiveCount();
+  const liveMax    = 25; // MAX_LIVE_FIXTURES (Performance Rules spec)
+
+  // AI Betting Module — 24 h cache
+  const bettingTs   = insightsCache?.ts ?? null;
+  const bettingAge  = bettingTs != null ? Math.round((now - bettingTs) / 1000) : null;
+  const bettingFresh = bettingTs != null && (now - bettingTs) < INSIGHTS_TTL;
+
+  // Featured / Fixture Module — 30 min featured cache + continuous DB refresh
+  const featuredTs   = topBetsCache?.ts ?? null;
+  const featuredAge  = featuredTs != null ? Math.round((now - featuredTs) / 1000) : null;
+  const featuredFresh = featuredTs != null && (now - featuredTs) < FEATURED_CACHE_TTL;
+
+  // Shared API cache — covers all modules
+  const sharedCacheSize = cache.size;
+
+  res.json({
+    ts: now,
+    apiSuspended,
+    modules: {
+      live: {
+        active:    true,
+        liveCount,
+        maxFixtures: liveMax,
+        updateInterval: "60s",
+      },
+      aiBetting: {
+        active:    true,
+        cacheHit:  bettingFresh,
+        ageSeconds: bettingAge,
+        cacheTtlH:  24,
+        picks:      insightsCache?.data?.top3?.length ?? 0,
+      },
+      matchData: {
+        active:        true,
+        cacheEntries:  sharedCacheSize,
+        statsTtlMin:   10,
+      },
+      fixture: {
+        active:      true,
+        featuredCacheHit:  featuredFresh,
+        featuredAgeSeconds: featuredAge,
+        featuredTtlMin: 30,
+      },
+    },
+  });
+});
 
 export default router;

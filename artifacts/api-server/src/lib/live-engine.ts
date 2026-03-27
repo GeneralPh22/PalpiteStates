@@ -34,7 +34,7 @@ const PRIORITY_LEAGUE_IDS = new Set([
   40, 141, 79, 136, 62, 72,   // Tier-2 domestic
 ]);
 
-const MAX_LIVE_FIXTURES = 20; // hard API-budget cap per cycle
+const MAX_LIVE_FIXTURES = 25; // hard API-budget cap per cycle (Performance Rules spec)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
