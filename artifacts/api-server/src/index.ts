@@ -1,4 +1,6 @@
+import { createServer } from "http";
 import app from "./app";
+import { initWebSocket } from "./lib/live-ws";
 
 const rawPort = process.env["PORT"];
 const port = rawPort ? Number(rawPort) : 3000;
@@ -17,6 +19,12 @@ process.on("unhandledRejection", (reason) => {
   console.error("[server] Unhandled rejection:", reason);
 });
 
-app.listen(effectivePort, "0.0.0.0", () => {
+// Create a plain HTTP server so Express and the WebSocket server share one port
+const httpServer = createServer(app);
+
+// Attach WebSocket server (handles upgrade events for /ws/live paths)
+initWebSocket(httpServer);
+
+httpServer.listen(effectivePort, "0.0.0.0", () => {
   console.log(`Server listening on port ${effectivePort}`);
 });

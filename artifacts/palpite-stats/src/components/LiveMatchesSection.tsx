@@ -1,7 +1,7 @@
-import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Radio, ChevronDown, ChevronUp, Flame, AlertTriangle, Loader2 } from "lucide-react";
+import { Radio, ChevronDown, ChevronUp, Flame, AlertTriangle, Loader2, Wifi, WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -496,9 +496,93 @@ function HotMatchCard({ match, rank }: { match: EnrichedMatch; rank: number }) {
   );
 }
 
+// ── WebSocket hook ─────────────────────────────────────────────────────────────
+/**
+ * Connects to the live WebSocket server. When the server pushes a live:update
+ * message, it writes the payload directly into the react-query cache, causing
+ * an instant re-render with no extra HTTP request.
+ *
+ * Falls back to 15 s polling if the WebSocket cannot connect or is closed.
+ */
+function useLiveWebSocket(onUpdate: (data: LiveData) => void): boolean {
+  const [connected, setConnected] = useState(false);
+  const wsRef    = useRef<WebSocket | null>(null);
+  const aliveRef = useRef(true);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stableOnUpdate = useCallback(onUpdate, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    aliveRef.current = true;
+
+    function connect() {
+      if (!aliveRef.current) return;
+      try {
+        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const url   = `${proto}//${window.location.host}${BASE}/api/ws/live`;
+        const ws    = new WebSocket(url);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          setConnected(true);
+          console.log("[ws] connected to live updates");
+        };
+
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data as string);
+            if (msg.type === "live:update" && msg.data) {
+              stableOnUpdate(msg.data as LiveData);
+            }
+          } catch { /* ignore malformed messages */ }
+        };
+
+        ws.onclose = () => {
+          setConnected(false);
+          if (aliveRef.current) {
+            timerRef.current = setTimeout(connect, 5_000);
+          }
+        };
+
+        ws.onerror = () => {
+          setConnected(false);
+          // onclose fires after onerror; reconnect is handled there
+        };
+      } catch {
+        setConnected(false);
+        if (aliveRef.current) {
+          timerRef.current = setTimeout(connect, 5_000);
+        }
+      }
+    }
+
+    connect();
+
+    return () => {
+      aliveRef.current = false;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      wsRef.current?.close();
+    };
+  }, [stableOnUpdate]);
+
+  return connected;
+}
+
 // ── Main Section ───────────────────────────────────────────────────────────────
 
 export default function LiveMatchesSection() {
+  const queryClient = useQueryClient();
+
+  // WS → writes directly into the query cache for instant UI update
+  const wsConnected = useLiveWebSocket(
+    useCallback(
+      (freshData: LiveData) => {
+        queryClient.setQueryData(["live", "matches"], freshData);
+      },
+      [queryClient]
+    )
+  );
+
   const { data, isLoading, dataUpdatedAt } = useQuery<LiveData>({
     queryKey: ["live", "matches"],
     queryFn: async () => {
@@ -508,7 +592,8 @@ export default function LiveMatchesSection() {
     },
     staleTime: 55_000,
     gcTime: 5 * 60_000,
-    refetchInterval: 60_000,
+    // When WS is active the cache is kept fresh via push; fall back to 15 s polling if not
+    refetchInterval: wsConnected ? 60_000 : 15_000,
     refetchIntervalInBackground: true,
     retry: 2,
   });
@@ -542,6 +627,20 @@ export default function LiveMatchesSection() {
         <h2 className="text-base font-bold text-white">Ao Vivo</h2>
         <span className="text-xs bg-red-500/15 text-red-400 border border-red-500/20 rounded-full px-2 py-0.5 font-semibold tabular-nums">
           {data.count} {data.count === 1 ? "jogo" : "jogos"}
+        </span>
+
+        {/* WebSocket connection indicator */}
+        <span
+          className={cn(
+            "flex items-center gap-1 text-[9px] ml-1",
+            wsConnected ? "text-emerald-400/60" : "text-white/20"
+          )}
+          title={wsConnected ? "Conexão em tempo real ativa" : "Atualizações via polling (15s)"}
+        >
+          {wsConnected
+            ? <Wifi    className="w-3 h-3" />
+            : <WifiOff className="w-3 h-3" />
+          }
         </span>
 
         {/* Stale data warning */}

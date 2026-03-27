@@ -17,6 +17,7 @@ import {
   type LiveFixture,
   type LiveMatchStats,
 } from "../lib/live-engine.js";
+import { broadcastLiveUpdate } from "../lib/live-ws.js";
 import { cacheManager } from "../lib/cache-manager.js";
 
 const router: IRouter = Router();
@@ -700,6 +701,32 @@ scheduleFeaturedRefresh();
 const LIVE_STATUS_CODES = new Set(["1H", "2H", "ET", "HT", "P", "BT"]);
 let liveRefreshRunning = false;
 
+/** Builds the exact same payload as GET /live/matches and pushes it via WS. */
+function buildAndBroadcast(): void {
+  const matches = getLiveMatches();
+  const ts = Date.now();
+  if (matches.length === 0) {
+    broadcastLiveUpdate({ available: false, count: 0, matches: [], ts });
+    return;
+  }
+  const enriched = matches.map(m => {
+    const stats  = getLiveStats(m.fixtureId);
+    const evData = getLiveEvents(m.fixtureId);
+    const hasRealStats = stats && (
+      stats.home.shots > 0 || stats.away.shots > 0 ||
+      stats.home.shotsOnTarget > 0 || stats.home.corners > 0
+    );
+    return {
+      ...m,
+      stats:       hasRealStats ? stats : null,
+      statsStale:  stats  ? (ts - stats.ts   > 90_000) : false,
+      events:      evData?.events ?? null,
+      eventsStale: evData ? (ts - evData.ts  > 90_000) : false,
+    };
+  });
+  broadcastLiveUpdate({ available: true, count: enriched.length, matches: enriched, ts });
+}
+
 async function refreshLiveMatches() {
   if (liveRefreshRunning || apiSuspended) return;
   liveRefreshRunning = true;
@@ -713,12 +740,15 @@ async function refreshLiveMatches() {
     const { data, ok } = await apiFetch("/fixtures?live=all", LIVE_TTL);
     if (ok && data && (data.results ?? 0) > 0) {
       await saveFixturesToDB(data.response ?? []);
-      // Feed live data into the in-memory engine (stats + clean API store)
+      // Feed live data into the in-memory engine (stats + events)
       updateFromApiResponse(data.response ?? []);
       console.log(`[live-refresh] Updated ${data.results} live fixtures`);
+      // Push fresh data to all connected WebSocket clients immediately
+      buildAndBroadcast();
     } else if (ok && data && data.results === 0) {
       // No live matches — clear the live engine store
       updateFromApiResponse([]);
+      buildAndBroadcast();
     }
   } catch (err: any) {
     console.error("[live-refresh] Error:", err.message);
