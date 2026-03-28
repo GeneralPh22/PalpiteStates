@@ -737,34 +737,85 @@ function buildAndBroadcast(): void {
 async function refreshLiveMatches() {
   if (liveRefreshRunning || apiSuspended) return;
   liveRefreshRunning = true;
+  const startedAt = Date.now();
+
+  // Watchdog: if this run takes > 35 s something is hung — force-release the lock
+  // so the next 30 s tick isn't blocked forever.
+  const watchdog = setTimeout(() => {
+    if (liveRefreshRunning) {
+      console.warn("[live-refresh] Watchdog: force-releasing stuck refresh lock");
+      liveRefreshRunning = false;
+    }
+  }, 36_000);
+
   try {
-    // Check DB for live matches — free read, no API cost
+    // Free DB read — no API cost
     const { fixtures: dbFixtures } = await getFixturesFromDB();
     const hasLive = dbFixtures.some(f => LIVE_STATUS_CODES.has(f.status.short));
     if (!hasLive) return;
 
     console.log("[live-refresh] Live matches detected — polling /fixtures?live=all");
-    const { data, ok } = await apiFetch("/fixtures?live=all", LIVE_TTL);
+
+    // Retry up to 3 times with 5 s delay between attempts.
+    // apiFetch sets apiSuspended on rate-limit so subsequent calls bail early;
+    // for transient network errors (ok=false, data=null) we retry immediately.
+    let data: any  = null;
+    let ok         = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (apiSuspended) break;                 // rate-limited mid-retry — give up
+      ({ data, ok } = await apiFetch("/fixtures?live=all", LIVE_TTL));
+      if (ok && data !== null) break;          // success
+      if (attempt < 3) {
+        console.warn(`[live-refresh] Attempt ${attempt}/3 returned empty — retrying in 5 s`);
+        await new Promise(r => setTimeout(r, 5_000));
+      }
+    }
+
     if (ok && data && (data.results ?? 0) > 0) {
       await saveFixturesToDB(data.response ?? []);
-      // Feed live data into the in-memory engine (stats + events)
       updateFromApiResponse(data.response ?? []);
-      console.log(`[live-refresh] Updated ${data.results} live fixtures`);
-      // Push fresh data to all connected WebSocket clients immediately
+      console.log(`[live-refresh] Updated ${data.results} live fixtures in ${Date.now() - startedAt} ms`);
       buildAndBroadcast();
     } else if (ok && data && data.results === 0) {
-      // No live matches — clear the live engine store
       updateFromApiResponse([]);
+      buildAndBroadcast();
+    } else {
+      // All 3 attempts failed — push whatever is currently cached so UI stays populated
+      console.warn("[live-refresh] All attempts failed — broadcasting last cached live data");
       buildAndBroadcast();
     }
   } catch (err: any) {
     console.error("[live-refresh] Error:", err.message);
+    buildAndBroadcast(); // push stale data rather than going silent
   } finally {
+    clearTimeout(watchdog);
     liveRefreshRunning = false;
   }
 }
 
 setInterval(refreshLiveMatches, 30 * 1000); // /fixtures?live=all every 30 s
+
+// ── API Health Check — every 60 s ─────────────────────────────────────────────
+// Only runs when the API is suspended (apiSuspended = true) to avoid extra calls
+// during normal operation.  Uses apiFetchPlayer so this never re-triggers suspension.
+// On a successful ping the suspension flag is cleared so live polling can resume.
+async function runApiHealthCheck(): Promise<void> {
+  if (!apiSuspended) return;
+  console.log("[health-check] API suspended — pinging /status to check recovery");
+  try {
+    const { data, ok } = await apiFetchPlayer("/status", 55_000);
+    if (ok && data?.response) {
+      console.log("[health-check] API-Football responding — clearing suspension, resuming live polling");
+      apiSuspended    = false;
+      lastSuspendedCheck = 0;
+    } else {
+      console.warn("[health-check] API-Football still unavailable — will retry in 60 s");
+    }
+  } catch {
+    console.warn("[health-check] Ping failed — will retry in 60 s");
+  }
+}
+setInterval(runApiHealthCheck, 60_000);
 
 // ── top-bets ──────────────────────────────────────────────────────────────────
 router.get("/top-bets", async (_req, res) => {

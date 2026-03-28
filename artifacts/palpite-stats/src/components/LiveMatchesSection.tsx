@@ -1531,7 +1531,7 @@ export default function LiveMatchesSection() {
     )
   );
 
-  const { data, isLoading, dataUpdatedAt } = useQuery<LiveData>({
+  const { data, isLoading, isError, dataUpdatedAt } = useQuery<LiveData>({
     queryKey: ["live", "matches"],
     queryFn: async () => {
       const res = await fetch(`${BASE}/api/live/matches`);
@@ -1540,10 +1540,10 @@ export default function LiveMatchesSection() {
     },
     staleTime: 55_000,
     gcTime: 5 * 60_000,
-    // When WS is active the cache is kept fresh via push; fall back to 15 s polling if not
-    refetchInterval: wsConnected ? 60_000 : 15_000,
+    // When WS is active the cache is kept fresh via push; fall back to 10 s polling if not
+    refetchInterval: wsConnected ? 60_000 : 10_000,
     refetchIntervalInBackground: true,
-    retry: 2,
+    retry: 3,  // up to 3 retries on network/HTTP failure
   });
 
   const enrichedMatches = useMemo<EnrichedMatch[]>(() => {
@@ -1566,7 +1566,23 @@ export default function LiveMatchesSection() {
   // Is the cached data stale (> 90s since last frontend poll succeeded)?
   const isStaleData = dataUpdatedAt > 0 && (Date.now() - dataUpdatedAt) > 90_000;
 
-  if (isLoading || !data?.available || !data.matches.length) return null;
+  // ── Render guards ────────────────────────────────────────────────────────────
+  // Case 1: First load with nothing cached yet — stay silent to avoid flash
+  if (isLoading && !data) return null;
+
+  // Case 2: No live matches right now (normal during off-peak hours) — hide section
+  if (!isLoading && data?.available === true && data.matches.length === 0) return null;
+
+  // Case 3: API unavailable or query failed after all retries — show reconnecting banner
+  const showReconnecting = (isError && !data) || (!!data && !data.available);
+  if (showReconnecting) {
+    return (
+      <div className="rounded-2xl border border-amber-500/15 bg-amber-500/[0.02] p-3.5 flex items-center gap-2.5">
+        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse flex-shrink-0 inline-block" />
+        <span className="text-[12px] text-white/40">Live data reconnecting...</span>
+      </div>
+    );
+  }
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-6 space-y-4">
