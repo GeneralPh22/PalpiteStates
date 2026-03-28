@@ -1083,7 +1083,7 @@ interface GoalScannerResult {
   leagueLogo:   string;
   elapsed:      number | null;
   status:       string;
-  gps:          number;          // 0–100 Goal Pressure Score
+  gps:          number;          // 0–100 Goal Pressure Score (may include momentum bonus)
   level:        GoalPressureLevel;
   levelLabel:   string;
   dominantTeam: string;          // team driving the highest pressure
@@ -1091,6 +1091,18 @@ interface GoalScannerResult {
   homeDA:    number;   awayDA:    number;   maxDA:    number;
   homeShots: number;   awayShots: number;   maxShots: number;
   homeSoT:   number;   awaySoT:   number;   maxSoT:   number;
+  // Momentum (last-5-minute pressure filter)
+  hasMomentum:   boolean;        // true when stats increased over last 5 polls
+  momentumBonus: number;         // bonus points added to base GPS (0 if no momentum)
+}
+
+/** One row of the 5-minute momentum history (one entry ≈ one 60 s poll). */
+interface MomentumSnapshot {
+  fixtureId: number;
+  sot:       number;   // total shots on target (home + away)
+  shots:     number;   // total shots
+  corners:   number;   // total corners
+  da:        number;   // total dangerous attacks
 }
 
 /**
@@ -1155,6 +1167,8 @@ function computeMatchGPS(match: EnrichedMatch): GoalScannerResult | null {
     homeDA, awayDA, maxDA: Math.max(homeDA, awayDA, 1),
     homeShots, awayShots, maxShots: Math.max(homeShots, awayShots, 1),
     homeSoT, awaySoT, maxSoT: Math.max(homeSoT, awaySoT, 1),
+    // Momentum fields start at zero; LiveGoalScanner applies the 5-minute pressure filter.
+    hasMomentum: false, momentumBonus: 0,
   };
 }
 
@@ -1204,10 +1218,20 @@ function ScannerCard({ result }: { result: GoalScannerResult }) {
       "rounded-xl border p-2.5 space-y-2",
       isHigh ? "border-amber-500/20 bg-amber-500/[0.03]" : "border-white/[0.07] bg-white/[0.02]"
     )}>
-      {/* 🚨 Alert row */}
-      {isAlert && (
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] font-black text-red-400 animate-pulse">🚨 Gol Possível em Breve</span>
+      {/* Alert + momentum row */}
+      {(isAlert || result.hasMomentum) && (
+        <div className="flex items-center gap-2">
+          {isAlert && (
+            <span className="text-[10px] font-black text-red-400 animate-pulse">🚨 Gol Possível em Breve</span>
+          )}
+          {result.hasMomentum && (
+            <span
+              className="text-[9px] font-bold text-emerald-400/90 ml-auto"
+              title={`Pressão crescente nos últimos 5 minutos (+${result.momentumBonus} pts)`}
+            >
+              ⚡ momentum +{result.momentumBonus}
+            </span>
+          )}
         </div>
       )}
 
@@ -1286,20 +1310,105 @@ function ScannerCard({ result }: { result: GoalScannerResult }) {
 }
 
 /**
- * PRO Live Goal Scanner — shows top 5 matches by GPS score (≥ 60).
- * Reads from already-enriched matches; no extra API calls; data cached 60 s by WS/poll.
+ * PRO Live Goal Scanner — always visible; shows top 5 matches by GPS score (≥ 60).
+ *
+ * Momentum Filter (Last-5-Minute Pressure):
+ *   Every time the match list updates (~60 s via WS/poll), the component snapshots
+ *   the combined stats (SoT, shots, corners, DA) for each fixture.  We keep the last
+ *   5 snapshots (≈ 5 minutes of data).  When all 5 snapshots are available, we compare
+ *   the current stats against the oldest snapshot.  If any key stat increased, a bonus
+ *   is added to the base GPS score:
+ *     • Shots on Target  up → +4 pts
+ *     • Dangerous Attacks up → +3 pts
+ *     • Total Shots       up → +3 pts
+ *     • Corners           up → +2 pts
+ *   Max total momentum bonus: 12 pts (capped at 100).
+ *
+ * No extra API calls — all data comes from the already-enriched match list.
  */
 function LiveGoalScanner({ matches }: { matches: EnrichedMatch[] }) {
-  const scanResults = useMemo<GoalScannerResult[]>(() => {
-    return matches
-      .map(computeMatchGPS)
-      .filter((r): r is GoalScannerResult => r !== null && r.level !== "none")
-      .sort((a, b) => b.gps - a.gps)
-      .slice(0, 5);          // top 5 as specified
+  // Rolling buffer of up to 5 stat snapshots (one per ~60 s poll).
+  // Key = fixtureId so we can look up per-match history efficiently.
+  const historyRef = useRef<Map<number, MomentumSnapshot>[]>([]);
+
+  // ── Snapshot current stats on every update ──────────────────────────────────
+  useEffect(() => {
+    if (matches.length === 0) return;
+    const snap = new Map<number, MomentumSnapshot>(
+      matches
+        .filter(m => m.stats)
+        .map(m => [
+          m.fixtureId,
+          {
+            fixtureId: m.fixtureId,
+            sot:       m.stats!.home.shotsOnTarget + m.stats!.away.shotsOnTarget,
+            shots:     m.stats!.home.shots          + m.stats!.away.shots,
+            corners:   m.stats!.home.corners        + m.stats!.away.corners,
+            da:        (m.stats!.home.dangerousAttacks ?? 0) + (m.stats!.away.dangerousAttacks ?? 0),
+          },
+        ])
+    );
+    // Append new snapshot and keep only the last 5 (≈ 5 minutes)
+    historyRef.current = [...historyRef.current, snap].slice(-5);
   }, [matches]);
 
-  if (scanResults.length === 0) return null;
+  // ── Compute GPS + apply momentum bonus ──────────────────────────────────────
+  const scanResults = useMemo<GoalScannerResult[]>(() => {
+    const history = historyRef.current;
+    // We need at least 2 snapshots to detect momentum (oldest vs current)
+    const oldSnap  = history.length >= 2 ? history[0] : undefined;
 
+    return matches
+      .map(m => {
+        const base = computeMatchGPS(m);
+        if (!base || base.level === "none") return null;
+
+        // ── Momentum bonus ─────────────────────────────────────────────────
+        let momentumBonus = 0;
+        if (oldSnap && m.stats) {
+          const old = oldSnap.get(m.fixtureId);
+          if (old) {
+            const currSoT     = m.stats.home.shotsOnTarget + m.stats.away.shotsOnTarget;
+            const currShots   = m.stats.home.shots          + m.stats.away.shots;
+            const currCorners = m.stats.home.corners        + m.stats.away.corners;
+            const currDA      = (m.stats.home.dangerousAttacks ?? 0) + (m.stats.away.dangerousAttacks ?? 0);
+
+            if (currSoT     > old.sot)     momentumBonus += 4; // shots on target increased
+            if (currDA      > old.da)      momentumBonus += 3; // dangerous attacks increased
+            if (currShots   > old.shots)   momentumBonus += 3; // total shots increased
+            if (currCorners > old.corners) momentumBonus += 2; // corners increased
+          }
+        }
+
+        const boostedGps = Math.min(100, base.gps + momentumBonus);
+
+        // Recompute level and label if GPS changed
+        let level:      GoalPressureLevel;
+        let levelLabel: string;
+        if      (boostedGps >= 80) { level = "very_high"; levelLabel = "🔥 Probabilidade Muito Alta"; }
+        else if (boostedGps >= 70) { level = "high";      levelLabel = "Alta Probabilidade de Gol";   }
+        else if (boostedGps >= 60) { level = "moderate";  levelLabel = "Pressão Moderada";            }
+        else                       { level = "none";      levelLabel = "";                             }
+
+        // Re-filter: if the boost pushed a borderline match into a visible tier, keep it;
+        // if momentum did nothing and base level is already "none" (< 60), still drop it.
+        if (level === "none") return null;
+
+        return {
+          ...base,
+          gps:          boostedGps,
+          level,
+          levelLabel,
+          hasMomentum:  momentumBonus > 0,
+          momentumBonus,
+        } satisfies GoalScannerResult;
+      })
+      .filter((r): r is GoalScannerResult => r !== null)
+      .sort((a, b) => b.gps - a.gps)
+      .slice(0, 5); // top 5 as specified
+  }, [matches]);  // history is a ref — no need to list it as dependency
+
+  // ── Always render (never hide) ───────────────────────────────────────────────
   return (
     <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.02] p-3 space-y-2">
       {/* Header */}
@@ -1309,16 +1418,28 @@ function LiveGoalScanner({ matches }: { matches: EnrichedMatch[] }) {
           Scanner de Gols ao Vivo
         </span>
         <span className="ml-auto text-[8px] text-white/15 tabular-nums">
-          top {scanResults.length} · GPS 0–100
+          {scanResults.length > 0 ? `top ${scanResults.length} · GPS 0–100` : "GPS 0–100"}
         </span>
       </div>
 
-      {/* Cards */}
-      <div className="space-y-2">
-        {scanResults.map(result => (
-          <ScannerCard key={result.fixtureId} result={result} />
-        ))}
-      </div>
+      {/* Cards — or empty state */}
+      {scanResults.length > 0 ? (
+        <div className="space-y-2">
+          {scanResults.map(result => (
+            <ScannerCard key={result.fixtureId} result={result} />
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-col items-center justify-center py-5 gap-1.5">
+          <span className="text-lg opacity-40">⚽</span>
+          <p className="text-[11px] text-white/30 text-center leading-snug">
+            No strong goal opportunities detected right now.
+          </p>
+          <p className="text-[9px] text-white/15 text-center">
+            Scanner updates every 60 s
+          </p>
+        </div>
+      )}
     </div>
   );
 }
