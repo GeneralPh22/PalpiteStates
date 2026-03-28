@@ -109,7 +109,7 @@ async function scannerApiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: a
   return apiFetch(path, ttl);
 }
 
-const LIVE_TTL = 30 * 1000;            // 30 seconds (for live matches)
+const LIVE_TTL = 25 * 1000;            // 25 s — slightly below the 30 s poll interval so every cycle fetches fresh data
 
 // ── Core fetch: used for fixture/match data — manages global suspension flag ───
 async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok: boolean; stale?: boolean }> {
@@ -697,7 +697,7 @@ function scheduleFeaturedRefresh() {
 scheduleFeaturedRefresh();
 
 // ── Live-match 60-second poller ────────────────────────────────────────────
-// Polls /fixtures?live=all every 60s — only when live matches exist in DB.
+// Polls /fixtures?live=all every 30 s — only when live matches exist in DB.
 // Single efficient API call; result updates those specific fixtures in DB.
 const LIVE_STATUS_CODES = new Set(["1H", "2H", "ET", "HT", "P", "BT"]);
 let liveRefreshRunning = false;
@@ -764,7 +764,7 @@ async function refreshLiveMatches() {
   }
 }
 
-setInterval(refreshLiveMatches, 60 * 1000);
+setInterval(refreshLiveMatches, 30 * 1000); // /fixtures?live=all every 30 s
 
 // ── top-bets ──────────────────────────────────────────────────────────────────
 router.get("/top-bets", async (_req, res) => {

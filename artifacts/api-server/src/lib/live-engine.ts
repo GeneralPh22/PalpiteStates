@@ -2,13 +2,17 @@
  * Live Match Engine
  *
  * Receives fixture data from the existing refreshLiveMatches() worker (runs
- * every 60 s) via updateFromApiResponse(). No duplicate /fixtures?live=all calls.
+ * every 30 s) via updateFromApiResponse(). No duplicate /fixtures?live=all calls.
  *
- * Worker 3 — refreshes per-fixture statistics AND events every 60 s.
+ * Worker 3 — refreshes per-fixture statistics AND events every 30 s.
  *   - Prioritises major-league matches
- *   - Hard limit: 20 fixtures per cycle (API budget protection)
- *   - Stats: 55 s freshness cache; empty results retried after 20 s
- *   - Events: 55 s freshness cache
+ *   - Hard limit: 25 fixtures per cycle (Performance Rules spec)
+ *   - Stats:   20 s freshness cache; empty results retried after 10 s
+ *   - Events:  15 s freshness cache
+ *   - Timeout: 8 s per API call (failsafe — stale data shown if delayed)
+ *
+ * Failsafe: if an API call times out or returns an error, the last cached data
+ * is kept and the next worker cycle (30 s later) retries automatically.
  *
  * Frontend reads getLiveMatches() / getLiveStats() / getLiveEvents() — zero API cost.
  */
@@ -112,7 +116,7 @@ async function fetchLiveApi(path: string): Promise<any> {
         "x-apisports-key":  apiKey,
         "x-rapidapi-host": "v3.football.api-sports.io",
       },
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(8_000),  // 8 s — failsafe; stale cache shown if exceeded
     });
     if (!res.ok) return null;
     return res.json();
@@ -153,9 +157,9 @@ async function fetchStatsForFixture(fixtureId: number): Promise<void> {
     const age     = Date.now() - existing.ts;
     const hasData = existing.home.shots > 0 || existing.away.shots > 0 ||
                     existing.home.shotsOnTarget > 0 || existing.home.corners > 0;
-    // Fresh with real data → skip; empty → retry after 20 s; stale → refetch after 55 s
-    if (hasData && age < 55_000) return;
-    if (!hasData && age < 20_000) return;
+    // Fresh with real data → skip; empty → retry after 10 s; stale → refetch after 20 s
+    if (hasData && age < 20_000) return;
+    if (!hasData && age < 10_000) return;
   }
 
   const json = await fetchLiveApi(`/fixtures/statistics?fixture=${fixtureId}`);
@@ -166,7 +170,7 @@ async function fetchStatsForFixture(fixtureId: number): Promise<void> {
         fixtureId,
         home: EMPTY_TEAM_STATS(),
         away: EMPTY_TEAM_STATS(),
-        ts: Date.now() - 35_000, // intentionally "old" so 20s retry triggers
+        ts: Date.now() - 11_000, // intentionally "old" so 10 s empty-retry triggers
       });
     }
     return;
@@ -190,7 +194,7 @@ async function fetchStatsForFixture(fixtureId: number): Promise<void> {
 
 async function fetchEventsForFixture(fixtureId: number): Promise<void> {
   const existing = liveEventsStore.get(fixtureId);
-  if (existing && Date.now() - existing.ts < 55_000) return;
+  if (existing && Date.now() - existing.ts < 15_000) return; // 15 s freshness
 
   const json = await fetchLiveApi(`/fixtures/events?fixture=${fixtureId}`);
   if (!json?.response) return;
@@ -371,9 +375,9 @@ function runCleanupWorker(): void {
 
 /** Call once at server startup. */
 export function startLiveEngine(): void {
-  setInterval(runLiveDataWorker, 60_000);
-  setInterval(runCleanupWorker,  30_000);  // extra safety: evict finished matches every 30 s
-  console.log("[live-engine] data worker started (stats + events 60 s | cleanup 30 s)");
+  setInterval(runLiveDataWorker, 30_000);  // stats + events every 30 s
+  setInterval(runCleanupWorker,  30_000);  // safety: evict finished matches every 30 s
+  console.log("[live-engine] data worker started (stats + events 30 s | cleanup 30 s)");
 }
 
 export function getLiveMatches(): LiveFixture[] {
