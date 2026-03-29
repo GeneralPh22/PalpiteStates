@@ -719,7 +719,8 @@ scheduleFeaturedRefresh();
 // Polls /fixtures?live=all every 30 s — only when live matches exist in DB.
 // Single efficient API call; result updates those specific fixtures in DB.
 const LIVE_STATUS_CODES = new Set(["1H", "2H", "ET", "HT", "P", "BT"]);
-let liveRefreshRunning = false;
+let liveRefreshRunning    = false;
+let lastRefreshAttemptTs  = 0;   // tracks last cycle start — used by 60 s watchdog
 
 /** Helper: enrich a single match with its stats + events snapshot. */
 function enrichMatchForResponse(m: LiveFixture, ts: number) {
@@ -754,64 +755,90 @@ function buildAndBroadcast(): void {
 }
 
 async function refreshLiveMatches() {
-  if (liveRefreshRunning) return;   // only block concurrent runs, NOT rate-limit suspension
-  liveRefreshRunning = true;
-  const startedAt = Date.now();
+  if (liveRefreshRunning) return;       // only block concurrent runs
+  liveRefreshRunning   = true;
+  lastRefreshAttemptTs = Date.now();
+  const startedAt      = Date.now();
 
-  // Watchdog: if this run takes > 35 s something is hung — force-release the lock
-  // so the next 30 s tick isn't blocked forever.
+  // Inner watchdog: if this run takes > 36 s something is hung — force-release
+  // the lock so the next 30 s tick (or the outer 60 s watchdog) can proceed.
   const watchdog = setTimeout(() => {
     if (liveRefreshRunning) {
-      console.warn("[live-refresh] Watchdog: force-releasing stuck refresh lock");
+      console.warn("[live-refresh] Watchdog: force-releasing stuck refresh lock after 36 s");
       liveRefreshRunning = false;
     }
   }, 36_000);
 
   try {
-    // Free DB read — no API cost
+    // ── Step 1: DB check (zero API cost — always available) ──────────────
     const { fixtures: dbFixtures } = await getFixturesFromDB();
     const hasLive = dbFixtures.some(f => LIVE_STATUS_CODES.has(f.status.short));
-    if (!hasLive) return;
+    if (!hasLive) return; // nothing live → nothing to broadcast
 
     console.log("[live-refresh] Live matches detected — polling /fixtures?live=all");
 
-    // Retry up to 3 times with 10 s delay between attempts (spec).
-    // apiFetch returns stale cache when apiSuspended — never bails mid-cycle.
-    // Transient network errors exhaust all 3 attempts then broadcast stale data.
-    let data: any  = null;
-    let ok         = false;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      ({ data, ok } = await apiFetch("/fixtures?live=all", LIVE_TTL));
-      if (ok && data !== null) break;          // success (fresh or stale cache)
-      if (attempt < 3) {
-        console.warn(`[live-refresh] Attempt ${attempt}/3 returned empty — retrying in 10 s`);
-        await new Promise(r => setTimeout(r, 10_000));
+    // ── Step 2: Fetch fresh data ─────────────────────────────────────────
+    let data: any = null;
+    let ok        = false;
+
+    if (apiSuspended) {
+      // API is rate-limited — skip all retry waits (they return null immediately).
+      // Serve the in-memory stale cache if present; otherwise broadcast engine state.
+      const stale = (cache as Map<string, { data: any; ts: number }>).get("/fixtures?live=all");
+      if (stale?.data) {
+        data = stale.data;
+        ok   = true;
+        console.warn("[live-refresh] API suspended — serving stale cache without retrying");
+      } else {
+        console.warn("[live-refresh] API suspended, no cache — broadcasting last engine state");
+      }
+    } else {
+      // Normal path: up to 3 attempts, 10 s apart (spec)
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        ({ data, ok } = await apiFetch("/fixtures?live=all", LIVE_TTL));
+        if (ok && data !== null) break;
+        if (attempt < 3) {
+          console.warn(`[live-refresh] Attempt ${attempt}/3 empty — retrying in 10 s`);
+          await new Promise(r => setTimeout(r, 10_000));
+        }
       }
     }
 
+    // ── Step 3: Update engine + broadcast ────────────────────────────────
     if (ok && data && (data.results ?? 0) > 0) {
       await saveFixturesToDB(data.response ?? []);
       updateFromApiResponse(data.response ?? []);
       console.log(`[live-refresh] Updated ${data.results} live fixtures in ${Date.now() - startedAt} ms`);
-      buildAndBroadcast();
     } else if (ok && data && data.results === 0) {
       updateFromApiResponse([]);
-      buildAndBroadcast();
     } else {
-      // All 3 attempts failed — push whatever is currently cached so UI stays populated
-      console.warn("[live-refresh] All attempts failed — broadcasting last cached live data");
-      buildAndBroadcast();
+      // All attempts failed or API suspended with no cache — keep engine as-is
+      console.warn("[live-refresh] No fresh data available — broadcasting stale engine state");
     }
+    buildAndBroadcast();
+
   } catch (err: any) {
     console.error("[live-refresh] Error:", err.message);
-    buildAndBroadcast(); // push stale data rather than going silent
+    buildAndBroadcast(); // always push something so clients stay alive
   } finally {
     clearTimeout(watchdog);
     liveRefreshRunning = false;
   }
 }
 
-setInterval(refreshLiveMatches, 30 * 1000); // /fixtures?live=all every 30 s
+setInterval(refreshLiveMatches, 30 * 1000); // primary poll: every 30 s
+
+// ── 60 s outer watchdog ────────────────────────────────────────────────────────
+// Guards against setInterval stalls or the function getting permanently stuck.
+// If no refresh attempt has started in the last 60 s, force-reset and restart.
+setInterval(() => {
+  const gap = Date.now() - lastRefreshAttemptTs;
+  if (lastRefreshAttemptTs > 0 && gap > 60_000) {
+    console.warn(`[live-watchdog] No refresh in ${Math.round(gap / 1000)} s — force-restarting`);
+    liveRefreshRunning = false; // release any stuck lock
+    refreshLiveMatches().catch(() => {});
+  }
+}, 60_000);
 
 // ── API Health Check — every 60 s ─────────────────────────────────────────────
 // Only runs when the API is suspended (apiSuspended = true) to avoid extra calls
