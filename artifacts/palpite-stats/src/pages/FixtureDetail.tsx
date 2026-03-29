@@ -401,18 +401,69 @@ function SeasonStatRow({
   );
 }
 
-function TabTeamStats({ fixture, stats, teamStatsData }: { fixture: Fixture; stats: any; teamStatsData: any }) {
+function TabTeamStats({
+  fixture, stats, teamStatsData, statsLoading, statsError,
+}: {
+  fixture: Fixture;
+  stats: any;
+  teamStatsData: any;
+  statsLoading?: boolean;
+  statsError?: boolean;
+}) {
   // ── Season stats panel (primary) ─────────────────────────────────────────
   const hS = teamStatsData?.home?.stats ?? null;
   const aS = teamStatsData?.away?.stats ?? null;
   const hasSeasonStats = !!(hS || aS);
-  const isLoading = !teamStatsData && !stats;
+  const hasMatchStats  = (stats?.stats?.length ?? 0) > 0;
+
+  // Show spinner while loading OR actively retrying
+  const isLoading = statsLoading || (!teamStatsData && !stats && !statsError);
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-16 text-zinc-600 gap-2">
-        <Loader2 className="w-5 h-5 animate-spin" />
-        <span className="text-sm">Carregando estatísticas...</span>
+      <div className="flex flex-col items-center justify-center py-16 gap-3">
+        <Loader2 className="w-5 h-5 text-primary animate-spin" />
+        <span className="text-sm text-zinc-500">Carregando estatísticas...</span>
+        <span className="text-xs text-zinc-700">Buscando dados do servidor...</span>
+      </div>
+    );
+  }
+
+  // Fallback: show basic match info when all retries exhausted and no data anywhere
+  if (statsError && !hasSeasonStats && !hasMatchStats) {
+    return (
+      <div className="space-y-4">
+        <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-6 space-y-5">
+          {/* Teams + score */}
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div className="flex flex-col items-center gap-2">
+              {fixture.homeTeam.logo && (
+                <img src={fixture.homeTeam.logo} alt="" className="w-10 h-10 object-contain" loading="lazy" />
+              )}
+              <span className="text-sm font-bold text-white leading-tight">{fixture.homeTeam.name}</span>
+            </div>
+            <div className="flex flex-col items-center justify-center gap-1">
+              <div className="text-3xl font-black text-white tabular-nums">
+                {fixture.score.home ?? "–"}
+                <span className="text-zinc-600 mx-1">–</span>
+                {fixture.score.away ?? "–"}
+              </div>
+              <span className="text-[10px] text-zinc-600 uppercase tracking-wide">{fixture.status.long}</span>
+              {fixture.status.elapsed && (
+                <span className="text-[10px] text-red-400 font-semibold">{fixture.status.elapsed}'</span>
+              )}
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              {fixture.awayTeam.logo && (
+                <img src={fixture.awayTeam.logo} alt="" className="w-10 h-10 object-contain" loading="lazy" />
+              )}
+              <span className="text-sm font-bold text-white leading-tight">{fixture.awayTeam.name}</span>
+            </div>
+          </div>
+          <p className="text-center text-xs text-zinc-700 pt-2 border-t border-white/[0.05]">
+            Estatísticas detalhadas não disponíveis · Tente novamente em instantes
+          </p>
+        </div>
       </div>
     );
   }
@@ -1580,19 +1631,27 @@ export default function FixtureDetail() {
     staleTime: 10 * 60 * 1000,
   });
 
-  const { data: statsData } = useQuery({
+  const {
+    data:      statsData,
+    isLoading: statsLoading,
+    isError:   statsError,
+    isFetching: statsFetching,
+  } = useQuery({
     queryKey: ["fixture-stats", id],
     queryFn: async () => {
-      try {
-        const res = await fetch(`${BASE}/api/fixture/${id}/stats`);
-        if (!res.ok) return { stats: [], available: false };
-        return res.json();
-      } catch {
-        return { stats: [], available: false };
+      const res = await fetch(`${BASE}/api/fixture/${id}/stats`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      // Throw so React Query retries — only when truly empty (not just "no live stats")
+      if (!json.available && (!json.stats || json.stats.length === 0)) {
+        throw new Error("stats_unavailable");
       }
+      return json;
     },
     enabled: activeTab === "stats" && !!fixture,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 1000,  // 30 s — matches backend FIXTURE_STATS_TTL
+    retry: 3,
+    retryDelay: 3000,      // 3 s between attempts
   });
 
   const { data: teamStatsData } = useQuery({
@@ -1921,7 +1980,7 @@ export default function FixtureDetail() {
           {(() => {
             switch (activeTab) {
               case "overview": return <TabOverview fixture={fixture} analysis={analysis} last5Data={last5Data} />;
-              case "stats":    return <TabTeamStats fixture={fixture} stats={statsData} teamStatsData={teamStatsData} />;
+              case "stats":    return <TabTeamStats fixture={fixture} stats={statsData} teamStatsData={teamStatsData} statsLoading={statsLoading || statsFetching} statsError={statsError} />;
               case "h2h":      return <TabH2H h2h={h2hData} fixture={fixture} />;
               case "players":  return <TabPlayers data={playersData} />;
               case "odds":     return <TabOdds oddsData={oddsData} fixture={fixture} analysis={analysis} />;

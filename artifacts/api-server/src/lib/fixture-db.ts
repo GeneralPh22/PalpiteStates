@@ -89,6 +89,25 @@ export async function getFixturesFromDB(): Promise<{ fixtures: CachedFixture[]; 
   }
 }
 
+/**
+ * Fetch a single fixture from DB by its fixture_id.
+ * Returns null if not found.  Never throws — errors are logged and null returned.
+ */
+export async function getFixtureByIdFromDB(fixtureId: number): Promise<CachedFixture | null> {
+  try {
+    const pool = getPool();
+    const result = await pool.query(
+      "SELECT * FROM fixtures_cache WHERE fixture_id = $1 LIMIT 1",
+      [fixtureId]
+    );
+    if (result.rows.length === 0) return null;
+    return rowToFixture(result.rows[0]);
+  } catch (err: any) {
+    console.error("[fixture-db] getFixtureByIdFromDB error:", err.message);
+    return null;
+  }
+}
+
 // ── Write ────────────────────────────────────────────────────────────────────
 
 /**

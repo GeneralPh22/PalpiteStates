@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import {
   getFixturesFromDB,
+  getFixtureByIdFromDB,
   saveFixturesToDB,
   isDBFresh,
   getTopLeaguePrelivFromDB,
@@ -352,6 +353,24 @@ function mapFixture(item: any) {
       name: venue.name ?? null,
       city: venue.city ?? null,
     },
+  };
+}
+
+/**
+ * Maps a CachedFixture (from the DB) to the same shape as mapFixture().
+ * Used as a DB-first fallback in GET /fixture/:id so the page always loads
+ * even when the API is suspended or rate-limited.
+ */
+function mapDbFixture(f: CachedFixture) {
+  return {
+    id:     f.id,
+    date:   f.date,
+    status: f.status,
+    league: { ...f.league, flag: "", season: null },
+    homeTeam: f.homeTeam,
+    awayTeam: f.awayTeam,
+    score:  f.score,
+    venue:  { name: null, city: null },
   };
 }
 
@@ -1010,6 +1029,9 @@ router.get("/matches-today", async (_req, res) => {
 });
 
 // ── fixture/:id ────────────────────────────────────────────────────────────────
+// Load order: API in-memory cache → DB → live API call.
+// This ensures the page always loads even when the API is suspended / rate-limited,
+// because the DB is populated by the background refresh worker every 10 minutes.
 router.get("/fixture/:id", async (req, res) => {
   try {
     const fixtureId = Number(req.params.id);
@@ -1017,13 +1039,26 @@ router.get("/fixture/:id", async (req, res) => {
       return res.json({ found: false, reason: "invalid_id" });
     }
 
-    const { data, ok, stale } = await apiFetch(`/fixtures?id=${fixtureId}`, MATCH_TTL);
+    // 1. Check shared in-memory API cache (fastest path)
+    const cacheKey = `/fixtures?id=${fixtureId}`;
+    const cached = (cache as Map<string, { data: any; ts: number }>).get(cacheKey);
+    if (cached && Date.now() - cached.ts < MATCH_TTL && cached.data?.response?.[0]) {
+      return res.json({ found: true, stale: false, demo: false, ...mapFixture(cached.data.response[0]) });
+    }
 
+    // 2. Check DB — always available even when the API is suspended
+    const dbFixture = await getFixtureByIdFromDB(fixtureId);
+    if (dbFixture) {
+      return res.json({ found: true, stale: true, demo: false, ...mapDbFixture(dbFixture) });
+    }
+
+    // 3. Live API call
+    const { data, ok, stale } = await apiFetch(cacheKey, MATCH_TTL);
     if (ok && data?.response?.[0]) {
       return res.json({ found: true, stale: !!stale, demo: false, ...mapFixture(data.response[0]) });
     }
 
-    // API unavailable or no data — return a safe 200 so the frontend never throws
+    // Nothing found anywhere — safe 200 so the frontend never throws
     return res.json({ found: false, reason: "unavailable" });
   } catch (err: any) {
     console.error("[fixture/:id]", err.message);
@@ -1032,19 +1067,61 @@ router.get("/fixture/:id", async (req, res) => {
 });
 
 // ── fixture/:id/stats ──────────────────────────────────────────────────────────
+// Load order: live-engine in-memory cache → apiFetchPlayer with up to 3 retries (3 s apart).
+// Uses apiFetchPlayer so a rate-limit hit here never cascades to suspend other modules.
+// The live-engine path covers all currently live matches with zero API calls.
+const FIXTURE_STATS_TTL = 30 * 1000; // 30 s — keeps in-match data fresh without hammering the quota
+
 router.get("/fixture/:id/stats", async (req, res) => {
   try {
     const fixtureId = Number(req.params.id);
-    const { data, ok } = await apiFetch(`/fixtures/statistics?fixture=${fixtureId}`, STATS_TTL);
 
-    if (ok && data?.response?.length > 0) {
-      return res.json({ stats: data.response, demo: false });
+    // ── 1. Live engine — instant, no API cost ──────────────────────────────
+    const liveStats = getLiveStats(fixtureId);
+    if (liveStats) {
+      const mapTeam = (t: typeof liveStats.home) => ({
+        team: { name: t.team },
+        statistics: [
+          { type: "Shots on Goal",     value: t.shotsOnTarget    },
+          { type: "Total Shots",       value: t.shots            },
+          { type: "Ball Possession",   value: t.possession       },
+          { type: "Corner Kicks",      value: t.corners          },
+          { type: "Fouls",             value: t.fouls            },
+          { type: "Yellow Cards",      value: t.yellowCards      },
+          { type: "Red Cards",         value: t.redCards         },
+          { type: "Dangerous Attacks", value: t.dangerousAttacks },
+          { type: "Goalkeeper Saves",  value: 0                  },
+        ],
+      });
+      return res.json({
+        stats:     [mapTeam(liveStats.home), mapTeam(liveStats.away)],
+        available: true,
+        source:    "live",
+      });
     }
 
+    // ── 2. API with retry — uses apiFetchPlayer to isolate from apiSuspended ─
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const { data, ok } = await apiFetchPlayer(
+        `/fixtures/statistics?fixture=${fixtureId}`,
+        FIXTURE_STATS_TTL,
+      );
+      if (ok && data?.response?.length > 0) {
+        return res.json({ stats: data.response, available: true, source: "api" });
+      }
+      if (attempt < 3) {
+        console.warn(`[fixture/stats] Attempt ${attempt}/3 empty — retrying in 3 s`);
+        await new Promise(r => setTimeout(r, 3_000));
+      }
+    }
+
+    // ── 3. All retries failed — graceful empty ─────────────────────────────
+    console.warn(`[fixture/stats] All attempts failed for fixture ${fixtureId}`);
     return res.json({ stats: [], available: false });
+
   } catch (err: any) {
     console.error("[fixture/stats]", err.message);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.json({ stats: [], available: false });
   }
 });
 
