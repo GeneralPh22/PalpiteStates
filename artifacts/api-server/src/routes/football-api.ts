@@ -1125,6 +1125,121 @@ router.get("/fixture/:id/stats", async (req, res) => {
   }
 });
 
+// ── /trader ────────────────────────────────────────────────────────────────────
+// Trader Center: live-engine derived signals — zero API quota cost.
+// Modules: Hot Ranking (top 5) | Over Scanner (max 4) | Goal Alert | momentum data.
+
+interface TraderMatch {
+  fixtureId: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  elapsed: number;
+  status: string;
+  homeTeamLogo: string;
+  awayTeamLogo: string;
+  league: string;
+  goalPressureScore: number;
+  homePressure: number;
+  awayPressure: number;
+  totalSoT: number;
+  totalDA: number;
+  totalShots: number;
+  shotsDelta: number;
+  attacksDelta: number;
+  signal?: string;
+}
+
+// Snapshot store for 5-min delta (Goal Alert)
+const traderSnapshots = new Map<number, { ts: number; shotsOnTarget: number; dangerousAttacks: number }>();
+const TRADER_SNAPSHOT_WINDOW = 5 * 60 * 1000;
+
+router.get("/trader", (req, res) => {
+  const now     = Date.now();
+  const matches = getLiveMatches().slice(0, 25);
+
+  const processed: TraderMatch[] = matches.map(m => {
+    const stats = getLiveStats(m.fixtureId);
+    const h = stats?.home;
+    const a = stats?.away;
+
+    const homeSoT   = h?.shotsOnTarget    ?? 0;
+    const awaySoT   = a?.shotsOnTarget    ?? 0;
+    const homeDA    = h?.dangerousAttacks ?? 0;
+    const awayDA    = a?.dangerousAttacks ?? 0;
+    const homeShots = h?.shots            ?? 0;
+    const awayShots = a?.shots            ?? 0;
+
+    const totalSoT   = homeSoT + awaySoT;
+    const totalDA    = homeDA  + awayDA;
+    const totalShots = homeShots + awayShots;
+
+    const goalPressureScore = (totalSoT * 3) + (totalDA * 2) + (totalShots * 1.5);
+    const homePressure      = (homeSoT * 3) + homeDA;
+    const awayPressure      = (awaySoT * 3) + awayDA;
+
+    // Last-5-min delta for Goal Alert
+    const snap = traderSnapshots.get(m.fixtureId);
+    let shotsDelta   = 0;
+    let attacksDelta = 0;
+    if (snap && now - snap.ts <= TRADER_SNAPSHOT_WINDOW * 1.5) {
+      shotsDelta   = Math.max(0, totalSoT - snap.shotsOnTarget);
+      attacksDelta = Math.max(0, totalDA  - snap.dangerousAttacks);
+    }
+    if (!snap || now - snap.ts >= TRADER_SNAPSHOT_WINDOW) {
+      traderSnapshots.set(m.fixtureId, { ts: now, shotsOnTarget: totalSoT, dangerousAttacks: totalDA });
+    }
+
+    return {
+      fixtureId:         m.fixtureId,
+      homeTeam:          m.homeTeam,
+      awayTeam:          m.awayTeam,
+      homeScore:         m.homeScore,
+      awayScore:         m.awayScore,
+      elapsed:           m.elapsed ?? 0,
+      status:            m.status,
+      homeTeamLogo:      m.homeTeamLogo,
+      awayTeamLogo:      m.awayTeamLogo,
+      league:            m.league,
+      goalPressureScore,
+      homePressure,
+      awayPressure,
+      totalSoT,
+      totalDA,
+      totalShots,
+      shotsDelta,
+      attacksDelta,
+    };
+  });
+
+  // Module 1: Hot Ranking (top 5 by goalPressureScore)
+  const hotRanking = [...processed]
+    .sort((a, b) => b.goalPressureScore - a.goalPressureScore)
+    .slice(0, 5);
+
+  // Module 2: Over Scanner (max 4 signals)
+  const overSignals: TraderMatch[] = [];
+  for (const m of processed) {
+    if (m.elapsed >= 35 && m.totalSoT >= 6 && m.totalDA >= 25) {
+      overSignals.push({ ...m, signal: "over_1_5" });
+    } else if (m.elapsed >= 20 && m.totalSoT >= 4 && m.totalDA >= 15) {
+      overSignals.push({ ...m, signal: "over_0_5" });
+    }
+  }
+
+  // Module 3: Goal Alert
+  const goalAlerts = processed.filter(m => m.shotsDelta >= 2 && m.attacksDelta >= 6);
+
+  return res.json({
+    hotRanking,
+    overSignals: overSignals.slice(0, 4),
+    goalAlerts,
+    liveCount: matches.length,
+    ts: now,
+  });
+});
+
 // ── fixture/:id/team-stats ─────────────────────────────────────────────────────
 // Returns season statistics for both teams, with fallback to last-5 averages.
 router.get("/fixture/:id/team-stats", async (req, res) => {

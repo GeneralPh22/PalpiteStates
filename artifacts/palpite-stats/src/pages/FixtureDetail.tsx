@@ -483,6 +483,54 @@ function TabTeamStats({
         </div>
       </div>
 
+      {/* ── Momentum Bar (Module 4 — Trader Center) ─────────────────────── */}
+      {stats?.stats?.length >= 2 && (() => {
+        const [hStat, aStat] = stats.stats;
+        const findVal = (ts: any, type: string): number => {
+          const s = (ts?.statistics ?? []).find((st: any) => st.type === type);
+          if (!s) return 0;
+          const v = s.value;
+          if (typeof v === "string" && v.includes("%")) return parseInt(v);
+          return typeof v === "number" ? v : parseInt(v ?? "0") || 0;
+        };
+        const homeP  = findVal(hStat, "Shots on Goal") * 3 + findVal(hStat, "Dangerous Attacks");
+        const awayP  = findVal(aStat, "Shots on Goal") * 3 + findVal(aStat, "Dangerous Attacks");
+        const total  = homeP + awayP || 1;
+        const homePct = Math.round((homeP / total) * 100);
+        const awayPct = 100 - homePct;
+        return (
+          <div className="bg-[#09090b] border border-white/[0.07] rounded-2xl p-4 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-semibold">Pressão de Ataque</span>
+              <Activity className="w-3 h-3 text-zinc-700" />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className={cn("text-[11px] font-black tabular-nums", homePct >= awayPct ? "text-primary" : "text-zinc-500")}>
+                {homePct}%
+              </span>
+              <span className="text-[8px] text-zinc-700 font-normal">SoT×3 + Ataques Perigosos</span>
+              <span className={cn("text-[11px] font-black tabular-nums", awayPct > homePct ? "text-primary" : "text-zinc-500")}>
+                {awayPct}%
+              </span>
+            </div>
+            <div className="flex h-1.5 rounded-full overflow-hidden">
+              <div
+                className={cn("h-full transition-all duration-500 rounded-l-full", homePct >= awayPct ? "bg-primary" : "bg-zinc-700")}
+                style={{ width: `${homePct}%` }}
+              />
+              <div
+                className={cn("h-full transition-all duration-500 rounded-r-full", awayPct > homePct ? "bg-primary" : "bg-zinc-700")}
+                style={{ width: `${awayPct}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[9px] text-zinc-700">
+              <span>{fixture.homeTeam.name}</span>
+              <span>{fixture.awayTeam.name}</span>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Season stats (3 sections: Form / Attack / Defense) ──────────── */}
       {hasSeasonStats ? (
         <>

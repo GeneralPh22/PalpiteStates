@@ -30,6 +30,7 @@ import { MatchInsights } from "@/components/MatchInsights";
 import AccumulatorSection from "@/components/AccumulatorSection";
 import BettingInsightsSection from "@/components/BettingInsightsSection";
 import LiveMatchesSection from "@/components/LiveMatchesSection";
+import TraderCenter from "@/components/TraderCenter";
 import { sortMatchesByLeague } from "@/lib/leaguePriority";
 import { useFavoriteLeagues } from "@/hooks/useFavoriteLeagues";
 import { COUNTRY_LEAGUES } from "@/lib/leagues";
@@ -1009,6 +1010,9 @@ export default function Home() {
 
       {/* Featured sections: Favorites + Top Bets + Goal Probability + Hot Matches */}
       <div className="container mx-auto px-4 md:px-6 mt-10 relative z-20">
+        {/* Central do Trader — live signals derived from live engine (above live list) */}
+        <TraderCenter />
+
         {/* Step 1 — Live data (highest priority, polls every 60 s) */}
         <LiveMatchesSection />
 
