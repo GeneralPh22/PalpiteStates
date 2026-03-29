@@ -7,8 +7,8 @@
  * Worker 3 — refreshes per-fixture statistics AND events every 30 s.
  *   - Prioritises major-league matches
  *   - Hard limit: 25 fixtures per cycle (Performance Rules spec)
- *   - Stats:   20 s freshness cache; empty results retried after 10 s
- *   - Events:  15 s freshness cache
+ *   - Stats:   30 s freshness cache; empty results retried after 10 s (spec)
+ *   - Events:  20 s freshness cache (spec)
  *   - Timeout: 8 s per API call (failsafe — stale data shown if delayed)
  *
  * Failsafe: if an API call times out or returns an error, the last cached data
@@ -157,8 +157,8 @@ async function fetchStatsForFixture(fixtureId: number): Promise<void> {
     const age     = Date.now() - existing.ts;
     const hasData = existing.home.shots > 0 || existing.away.shots > 0 ||
                     existing.home.shotsOnTarget > 0 || existing.home.corners > 0;
-    // Fresh with real data → skip; empty → retry after 10 s; stale → refetch after 20 s
-    if (hasData && age < 20_000) return;
+    // Fresh with real data → skip; empty → retry after 10 s; stale → refetch after 30 s (spec)
+    if (hasData && age < 30_000) return;
     if (!hasData && age < 10_000) return;
   }
 
@@ -194,7 +194,7 @@ async function fetchStatsForFixture(fixtureId: number): Promise<void> {
 
 async function fetchEventsForFixture(fixtureId: number): Promise<void> {
   const existing = liveEventsStore.get(fixtureId);
-  if (existing && Date.now() - existing.ts < 15_000) return; // 15 s freshness
+  if (existing && Date.now() - existing.ts < 20_000) return; // 20 s freshness (spec)
 
   const json = await fetchLiveApi(`/fixtures/events?fixture=${fixtureId}`);
   if (!json?.response) return;

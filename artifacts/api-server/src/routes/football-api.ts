@@ -110,7 +110,7 @@ async function scannerApiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: a
   return apiFetch(path, ttl);
 }
 
-const LIVE_TTL = 25 * 1000;            // 25 s — slightly below the 30 s poll interval so every cycle fetches fresh data
+const LIVE_TTL = 30 * 1000;            // 30 s — matches the 30 s poll interval (spec)
 
 // ── Core fetch: used for fixture/match data — manages global suspension flag ───
 async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok: boolean; stale?: boolean }> {
@@ -754,7 +754,7 @@ function buildAndBroadcast(): void {
 }
 
 async function refreshLiveMatches() {
-  if (liveRefreshRunning || apiSuspended) return;
+  if (liveRefreshRunning) return;   // only block concurrent runs, NOT rate-limit suspension
   liveRefreshRunning = true;
   const startedAt = Date.now();
 
@@ -775,18 +775,17 @@ async function refreshLiveMatches() {
 
     console.log("[live-refresh] Live matches detected — polling /fixtures?live=all");
 
-    // Retry up to 3 times with 5 s delay between attempts.
-    // apiFetch sets apiSuspended on rate-limit so subsequent calls bail early;
-    // for transient network errors (ok=false, data=null) we retry immediately.
+    // Retry up to 3 times with 10 s delay between attempts (spec).
+    // apiFetch returns stale cache when apiSuspended — never bails mid-cycle.
+    // Transient network errors exhaust all 3 attempts then broadcast stale data.
     let data: any  = null;
     let ok         = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      if (apiSuspended) break;                 // rate-limited mid-retry — give up
       ({ data, ok } = await apiFetch("/fixtures?live=all", LIVE_TTL));
-      if (ok && data !== null) break;          // success
+      if (ok && data !== null) break;          // success (fresh or stale cache)
       if (attempt < 3) {
-        console.warn(`[live-refresh] Attempt ${attempt}/3 returned empty — retrying in 5 s`);
-        await new Promise(r => setTimeout(r, 5_000));
+        console.warn(`[live-refresh] Attempt ${attempt}/3 returned empty — retrying in 10 s`);
+        await new Promise(r => setTimeout(r, 10_000));
       }
     }
 
