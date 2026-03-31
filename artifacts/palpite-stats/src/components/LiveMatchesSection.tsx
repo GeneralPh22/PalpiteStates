@@ -1570,16 +1570,23 @@ export default function LiveMatchesSection() {
   // Case 1: First load with nothing cached yet — stay silent to avoid flash
   if (isLoading && !data) return null;
 
-  // Case 2: No live matches right now (normal during off-peak hours) — hide section
-  if (!isLoading && data?.available === true && data.matches.length === 0) return null;
-
-  // Case 3: API unavailable or query failed after all retries — show reconnecting banner
-  const showReconnecting = (isError && !data) || (!!data && !data.available);
-  if (showReconnecting) {
+  // Case 2: True network/server error with no cached data at all
+  if (isError && !data) {
     return (
-      <div className="rounded-2xl border border-amber-500/15 bg-amber-500/[0.02] p-3.5 flex items-center gap-2.5">
-        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse flex-shrink-0 inline-block" />
-        <span className="text-[12px] text-white/40">Live data reconnecting...</span>
+      <div className="rounded-2xl border border-white/[0.04] bg-white/[0.02] p-4 flex items-center gap-3">
+        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0 inline-block" />
+        <span className="text-[13px] text-white/50">Nenhum jogo ao vivo agora. Monitorando novos jogos...</span>
+      </div>
+    );
+  }
+
+  // Case 3: No live matches right now — show monitoring message, never hide section
+  // Covers: data.available === false, empty matches array, or API suspended
+  if (!data?.available || (data?.matches ?? []).length === 0) {
+    return (
+      <div className="rounded-2xl border border-white/[0.04] bg-white/[0.02] p-4 flex items-center gap-3">
+        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0 inline-block" />
+        <span className="text-[13px] text-white/50">Nenhum jogo ao vivo agora. Monitorando novos jogos...</span>
       </div>
     );
   }

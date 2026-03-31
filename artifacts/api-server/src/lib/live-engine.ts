@@ -6,7 +6,7 @@
  *
  * Worker 3 — refreshes per-fixture statistics AND events every 30 s.
  *   - Prioritises major-league matches
- *   - Hard limit: 25 fixtures per cycle (Performance Rules spec)
+ *   - Hard limit: 30 fixtures per cycle (Performance Rules spec)
  *   - Stats:   30 s freshness cache; empty results retried after 10 s (spec)
  *   - Events:  20 s freshness cache (spec)
  *   - Timeout: 8 s per API call (failsafe — stale data shown if delayed)
@@ -38,7 +38,7 @@ const PRIORITY_LEAGUE_IDS = new Set([
   40, 141, 79, 136, 62, 72,   // Tier-2 domestic
 ]);
 
-const MAX_LIVE_FIXTURES = 25; // hard API-budget cap per cycle (Performance Rules spec)
+const MAX_LIVE_FIXTURES = 30; // hard API-budget cap per cycle (Performance Rules spec)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -157,8 +157,8 @@ async function fetchStatsForFixture(fixtureId: number): Promise<void> {
     const age     = Date.now() - existing.ts;
     const hasData = existing.home.shots > 0 || existing.away.shots > 0 ||
                     existing.home.shotsOnTarget > 0 || existing.home.corners > 0;
-    // Fresh with real data → skip; empty → retry after 10 s; stale → refetch after 30 s (spec)
-    if (hasData && age < 30_000) return;
+    // Fresh with real data → skip; empty → retry after 10 s; stale → refetch after 45 s (spec)
+    if (hasData && age < 45_000) return;
     if (!hasData && age < 10_000) return;
   }
 

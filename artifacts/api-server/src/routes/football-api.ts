@@ -721,6 +721,7 @@ scheduleFeaturedRefresh();
 const LIVE_STATUS_CODES = new Set(["1H", "2H", "ET", "HT", "P", "BT"]);
 let liveRefreshRunning    = false;
 let lastRefreshAttemptTs  = 0;   // tracks last cycle start — used by 60 s watchdog
+let lastLiveDetectedTs    = 0;   // last time we found live matches — drives 120 s no-live watchdog
 
 /** Helper: enrich a single match with its stats + events snapshot. */
 function enrichMatchForResponse(m: LiveFixture, ts: number) {
@@ -773,8 +774,29 @@ async function refreshLiveMatches() {
     // ── Step 1: DB check (zero API cost — always available) ──────────────
     const { fixtures: dbFixtures } = await getFixturesFromDB();
     const hasLive = dbFixtures.some(f => LIVE_STATUS_CODES.has(f.status.short));
-    if (!hasLive) return; // nothing live → nothing to broadcast
 
+    if (!hasLive) {
+      // No live matches in DB — broadcast the empty state so the frontend shows
+      // "No live matches right now. Monitoring new games..." instead of going stale.
+      buildAndBroadcast();
+
+      // 120 s watchdog: if we've had no live matches for too long, re-fetch the full
+      // schedule from the API.  This catches matches that just kicked off but haven't
+      // yet been picked up by the 10-minute bg-refresh cycle.
+      const noLiveGap = lastLiveDetectedTs > 0 ? Date.now() - lastLiveDetectedTs : 0;
+      if (noLiveGap > 120_000) {
+        console.log(
+          `[live-refresh] No live matches for ${Math.round(noLiveGap / 1000)} s — ` +
+          `triggering schedule re-fetch`
+        );
+        lastLiveDetectedTs = Date.now(); // reset so we don't spam
+        fetchAndCacheFixtures().catch(() => {}); // non-blocking
+      }
+      return;
+    }
+
+    // Live matches detected — stamp the time and proceed
+    lastLiveDetectedTs = Date.now();
     console.log("[live-refresh] Live matches detected — polling /fixtures?live=all");
 
     // ── Step 2: Fetch fresh data ─────────────────────────────────────────
