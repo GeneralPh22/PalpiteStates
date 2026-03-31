@@ -22,8 +22,16 @@ interface TraderMatch {
   totalSoT: number;
   totalDA: number;
   totalShots: number;
+  totalCorners: number;
   shotsDelta: number;
   attacksDelta: number;
+  // Momentum signals
+  signals: string[];
+  signalCount: number;
+  goalProb: number;
+  alertLevel: 0 | 1 | 2 | 3;
+  alertLabel: string;
+  pressurePct: number;
   signal?: string;
 }
 
@@ -189,47 +197,100 @@ function OverScannerModule({ signals }: { signals: TraderMatch[] }) {
   );
 }
 
-// ── Module 3: Goal Alert ──────────────────────────────────────────────────────
+// ── Module 3: Live Goal Scanner ───────────────────────────────────────────────
+
+const ALERT_CONFIG = {
+  3: { label: "🔥 Alerta de Gol",    border: "border-red-500/35",    header: "from-red-500/[0.10]",  labelCls: "text-red-300",    badge: "text-red-400 bg-red-500/10 border-red-500/20",    pulseBadge: true,  probCls: "text-red-400",    barCls: "bg-red-500" },
+  2: { label: "⚡ Alta Pressão",      border: "border-orange-500/30", header: "from-orange-500/[0.08]", labelCls: "text-orange-300", badge: "text-orange-400 bg-orange-500/10 border-orange-500/20", pulseBadge: false, probCls: "text-orange-400", barCls: "bg-orange-500" },
+  1: { label: "🌡️ Aquecendo",        border: "border-amber-500/25",  header: "from-amber-500/[0.06]",  labelCls: "text-amber-300",  badge: "text-amber-400 bg-amber-500/10 border-amber-500/20",   pulseBadge: false, probCls: "text-amber-400",  barCls: "bg-amber-500" },
+} as const;
+
+function AlertCard({ m }: { m: TraderMatch }) {
+  const cfg = ALERT_CONFIG[m.alertLevel as 1 | 2 | 3];
+
+  return (
+    <Link href={`/fixture/${m.fixtureId}`}>
+      <div className={cn(
+        "rounded-xl border overflow-hidden cursor-pointer hover:brightness-110 transition-all",
+        cfg.border,
+        m.alertLevel === 3 && "shadow-[0_0_18px_rgba(239,68,68,0.10)]",
+      )}>
+        {/* Card header */}
+        <div className={cn(
+          "flex items-center justify-between px-3 py-2 bg-gradient-to-r to-transparent border-b",
+          cfg.header,
+          m.alertLevel === 3 ? "border-red-500/15" : m.alertLevel === 2 ? "border-orange-500/10" : "border-amber-500/10",
+        )}>
+          <span className={cn("text-[11px] font-bold", cfg.labelCls)}>{cfg.label}</span>
+          <div className="flex items-center gap-2">
+            <ScoreBadge home={m.homeScore} away={m.awayScore} />
+            <span className={cn(
+              "text-[9px] font-semibold px-1.5 py-0.5 rounded-full border tabular-nums",
+              cfg.badge,
+              cfg.pulseBadge && "animate-pulse",
+            )}>
+              {m.elapsed}'
+            </span>
+          </div>
+        </div>
+
+        {/* Match */}
+        <div className="px-3 pt-2 pb-1">
+          <TeamLogos
+            home={m.homeTeam} away={m.awayTeam}
+            homeLogo={m.homeTeamLogo} awayLogo={m.awayTeamLogo}
+          />
+        </div>
+
+        {/* Signals list */}
+        {m.signals.length > 0 && (
+          <div className="px-3 pb-2">
+            <p className="text-[9px] text-zinc-600 uppercase tracking-wider mb-1">Sinais detectados</p>
+            <ul className="space-y-0.5">
+              {m.signals.map((s, i) => (
+                <li key={i} className={cn("text-[10px] flex items-center gap-1", cfg.probCls, "opacity-80")}>
+                  <span className="w-1 h-1 rounded-full bg-current flex-shrink-0" />
+                  {s}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Goal probability bar */}
+        <div className="px-3 pb-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[9px] text-zinc-600 uppercase tracking-wider">Probabilidade de gol</span>
+            <span className={cn("text-[11px] font-black tabular-nums", cfg.probCls)}>{m.goalProb}%</span>
+          </div>
+          <div className="h-1 w-full bg-white/[0.06] rounded-full overflow-hidden">
+            <div
+              className={cn("h-full rounded-full transition-all duration-700", cfg.barCls)}
+              style={{ width: `${m.goalProb}%` }}
+            />
+          </div>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
 function GoalAlertModule({ alerts }: { alerts: TraderMatch[] }) {
   if (alerts.length === 0) return null;
 
+  const topAlerts = alerts.slice(0, 5); // cap at 5
+
   return (
-    <div className="bg-[#0d0d0f] border border-red-500/25 rounded-2xl overflow-hidden shadow-[0_0_20px_rgba(239,68,68,0.07)]">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-red-500/15 bg-gradient-to-r from-red-500/[0.08] to-transparent">
+    <div className="bg-[#0d0d0f] border border-white/[0.07] rounded-2xl overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.05] bg-gradient-to-r from-red-500/[0.06] to-transparent">
         <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
-        <span className="text-sm font-bold text-red-300">Alerta de Gol</span>
-        <span className="ml-auto text-[9px] text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded-full animate-pulse flex-shrink-0">
-          🚨 PERIGO
+        <span className="text-sm font-bold text-white">Live Goal Scanner</span>
+        <span className="ml-auto text-[9px] text-red-400/80 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded-full animate-pulse flex-shrink-0">
+          {topAlerts.length} alerta{topAlerts.length !== 1 ? "s" : ""}
         </span>
       </div>
-
-      <div className="divide-y divide-red-500/[0.08]">
-        {alerts.map(m => (
-          <Link key={m.fixtureId} href={`/fixture/${m.fixtureId}`}>
-            <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-red-500/[0.04] transition-colors cursor-pointer group">
-              <div className="flex-1 min-w-0 space-y-0.5">
-                <div className="text-[9px] text-red-400 font-semibold uppercase tracking-wider">
-                  Possível gol em breve
-                </div>
-                <TeamLogos
-                  home={m.homeTeam} away={m.awayTeam}
-                  homeLogo={m.homeTeamLogo} awayLogo={m.awayTeamLogo}
-                />
-              </div>
-
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <div className="flex flex-col items-end gap-0.5">
-                  <span className="text-[9px] text-red-400/70 tabular-nums">
-                    +{m.shotsDelta} SoT · +{m.attacksDelta} DA
-                  </span>
-                  <MinuteBadge elapsed={m.elapsed} />
-                </div>
-                <ScoreBadge home={m.homeScore} away={m.awayScore} />
-                <ChevronRight className="w-3.5 h-3.5 text-zinc-800 group-hover:text-zinc-500 transition-colors" />
-              </div>
-            </div>
-          </Link>
-        ))}
+      <div className="p-3 flex flex-col gap-2">
+        {topAlerts.map(m => <AlertCard key={m.fixtureId} m={m} />)}
       </div>
     </div>
   );

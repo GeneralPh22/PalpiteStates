@@ -1194,16 +1194,121 @@ interface TraderMatch {
   totalSoT: number;
   totalDA: number;
   totalShots: number;
+  totalCorners: number;
   shotsDelta: number;
   attacksDelta: number;
+  // Momentum signals (Live Goal Scanner)
+  signals: string[];
+  signalCount: number;
+  goalProb: number;
+  alertLevel: 0 | 1 | 2 | 3;   // 0=none 1=watch 2=pressure 3=alert
+  alertLabel: string;
+  pressurePct: number;
   signal?: string;
 }
 
-// Snapshot store for 5-min delta (Goal Alert)
-const traderSnapshots = new Map<number, { ts: number; shotsOnTarget: number; dangerousAttacks: number }>();
+// Snapshot store for 5-min momentum delta
+const traderSnapshots = new Map<number, {
+  ts: number;
+  shotsOnTarget: number;
+  dangerousAttacks: number;
+  corners: number;
+  totalShots: number;
+}>();
 const TRADER_SNAPSHOT_WINDOW = 5 * 60 * 1000;
 
-router.get("/trader", (req, res) => {
+/** Parse "55%" possession string → number 55 */
+function parsePossession(p: string | undefined): number {
+  if (!p) return 0;
+  return parseInt(p.replace("%", ""), 10) || 0;
+}
+
+/**
+ * Compute all 7 momentum signals for a match based on 5-min deltas + live stats.
+ * Returns signals list, count, goal probability, alert level and label.
+ */
+function computeMomentumSignals(
+  homeSoT: number, awaySoT: number,
+  homeShots: number, awayShots: number,
+  homeDA: number, awayDA: number,
+  homeCorners: number, awayCorners: number,
+  homePoss: number, awayPoss: number,
+  elapsed: number,
+  snap: { shotsOnTarget: number; dangerousAttacks: number; corners: number; totalShots: number } | null,
+  now: number,
+  snapTs: number,
+): { signals: string[]; signalCount: number; goalProb: number; alertLevel: 0|1|2|3; alertLabel: string; pressurePct: number } {
+  const totalSoT     = homeSoT + awaySoT;
+  const totalDA      = homeDA  + awayDA;
+  const totalShots   = homeShots + awayShots;
+  const totalCorners = homeCorners + awayCorners;
+  const maxPoss      = Math.max(homePoss, awayPoss);
+
+  // 5-min window deltas
+  const withinWindow = snap != null && (now - snapTs) <= TRADER_SNAPSHOT_WINDOW * 1.5;
+  const sotDelta     = withinWindow ? Math.max(0, totalSoT     - snap!.shotsOnTarget)   : 0;
+  const daDelta      = withinWindow ? Math.max(0, totalDA      - snap!.dangerousAttacks) : 0;
+  const cornerDelta  = withinWindow ? Math.max(0, totalCorners - snap!.corners)          : 0;
+  const shotsDelta   = withinWindow ? Math.max(0, totalShots   - snap!.totalShots)       : 0;
+
+  // Time-normalised pressure (dominant team, per-60-min pace)
+  const safeElapsed     = Math.max(1, elapsed);
+  const homePressurePct = Math.min(100, (homeSoT * 4 + homeDA * 0.5 + homeCorners * 2) / safeElapsed * 60);
+  const awayPressurePct = Math.min(100, (awaySoT * 4 + awayDA * 0.5 + awayCorners * 2) / safeElapsed * 60);
+  const pressurePct     = Math.round(Math.max(homePressurePct, awayPressurePct));
+
+  // ── 7 Signals ───────────────────────────────────────────────────────────────
+  const signals: string[] = [];
+
+  // S1: 2+ shots on target in last 5 min
+  if (sotDelta >= 2)
+    signals.push(`${sotDelta} finalizações no gol`);
+
+  // S2: 4+ total shots in last 5 min
+  if (shotsDelta >= 4)
+    signals.push(`${shotsDelta} chutes totais`);
+
+  // S3: 3+ dangerous attacks in last 5 min
+  if (daDelta >= 3)
+    signals.push(`${daDelta} ataques perigosos`);
+
+  // S4: 2+ corners in last 5 min (consecutive pressure)
+  if (cornerDelta >= 2)
+    signals.push(`${cornerDelta} escanteios consecutivos`);
+
+  // S5: attacking pressure ≥ 65% (time-normalised)
+  if (pressurePct >= 65)
+    signals.push(`pressão ofensiva ${pressurePct}%`);
+
+  // S6: possession ≥ 60% by dominant team
+  if (maxPoss >= 60)
+    signals.push(`posse de bola ${maxPoss}%`);
+
+  // S7: xG spike — meaningful SoT surge AND total shot volume spike
+  if (sotDelta >= 2 && shotsDelta >= 3)
+    signals.push("spike de xG detectado");
+
+  // ── Goal probability ────────────────────────────────────────────────────────
+  let goalProb = 25;
+  if (sotDelta >= 2)              goalProb += 10;
+  if (daDelta >= 3)               goalProb += 10;
+  if (cornerDelta >= 2)           goalProb += 10;
+  if (pressurePct >= 70)          goalProb += 15;
+  if (sotDelta >= 2 && shotsDelta >= 3) goalProb += 10; // xG spike bonus
+  goalProb = Math.min(85, goalProb);
+
+  // ── Alert level ─────────────────────────────────────────────────────────────
+  const signalCount = signals.length;
+  let alertLevel: 0 | 1 | 2 | 3 = 0;
+  let alertLabel = "";
+  if (signalCount >= 4)      { alertLevel = 3; alertLabel = "Gol em breve"; }
+  else if (signalCount >= 3) { alertLevel = 2; alertLabel = "Alta pressão"; }
+  else if (signalCount >= 2) { alertLevel = 1; alertLabel = "Aquecendo"; }
+
+  return { signals, signalCount, goalProb, alertLevel, alertLabel, pressurePct };
+}
+
+router.get("/trader", (_req, res) => {
   const now     = Date.now();
   const matches = getLiveMatches().slice(0, 25);
 
@@ -1212,32 +1317,51 @@ router.get("/trader", (req, res) => {
     const h = stats?.home;
     const a = stats?.away;
 
-    const homeSoT   = h?.shotsOnTarget    ?? 0;
-    const awaySoT   = a?.shotsOnTarget    ?? 0;
-    const homeDA    = h?.dangerousAttacks ?? 0;
-    const awayDA    = a?.dangerousAttacks ?? 0;
-    const homeShots = h?.shots            ?? 0;
-    const awayShots = a?.shots            ?? 0;
+    const homeSoT    = h?.shotsOnTarget    ?? 0;
+    const awaySoT    = a?.shotsOnTarget    ?? 0;
+    const homeDA     = h?.dangerousAttacks ?? 0;
+    const awayDA     = a?.dangerousAttacks ?? 0;
+    const homeShots  = h?.shots            ?? 0;
+    const awayShots  = a?.shots            ?? 0;
+    const homeCorners = h?.corners         ?? 0;
+    const awayCorners = a?.corners         ?? 0;
+    const homePoss   = parsePossession(h?.possession);
+    const awayPoss   = parsePossession(a?.possession);
 
-    const totalSoT   = homeSoT + awaySoT;
-    const totalDA    = homeDA  + awayDA;
-    const totalShots = homeShots + awayShots;
+    const totalSoT     = homeSoT + awaySoT;
+    const totalDA      = homeDA  + awayDA;
+    const totalShots   = homeShots + awayShots;
+    const totalCorners = homeCorners + awayCorners;
 
     const goalPressureScore = (totalSoT * 3) + (totalDA * 2) + (totalShots * 1.5);
     const homePressure      = (homeSoT * 3) + homeDA;
     const awayPressure      = (awaySoT * 3) + awayDA;
 
-    // Last-5-min delta for Goal Alert
-    const snap = traderSnapshots.get(m.fixtureId);
-    let shotsDelta   = 0;
-    let attacksDelta = 0;
-    if (snap && now - snap.ts <= TRADER_SNAPSHOT_WINDOW * 1.5) {
-      shotsDelta   = Math.max(0, totalSoT - snap.shotsOnTarget);
-      attacksDelta = Math.max(0, totalDA  - snap.dangerousAttacks);
-    }
+    // Snapshot management
+    const snap    = traderSnapshots.get(m.fixtureId);
+    const snapTs  = snap?.ts ?? 0;
     if (!snap || now - snap.ts >= TRADER_SNAPSHOT_WINDOW) {
-      traderSnapshots.set(m.fixtureId, { ts: now, shotsOnTarget: totalSoT, dangerousAttacks: totalDA });
+      traderSnapshots.set(m.fixtureId, {
+        ts: now,
+        shotsOnTarget:   totalSoT,
+        dangerousAttacks: totalDA,
+        corners:         totalCorners,
+        totalShots,
+      });
     }
+
+    // Back-compat delta fields
+    const withinWindow = snap != null && (now - snapTs) <= TRADER_SNAPSHOT_WINDOW * 1.5;
+    const shotsDelta   = withinWindow ? Math.max(0, totalSoT    - (snap?.shotsOnTarget   ?? 0)) : 0;
+    const attacksDelta = withinWindow ? Math.max(0, totalDA     - (snap?.dangerousAttacks ?? 0)) : 0;
+
+    // Momentum signals
+    const momentum = computeMomentumSignals(
+      homeSoT, awaySoT, homeShots, awayShots,
+      homeDA, awayDA, homeCorners, awayCorners,
+      homePoss, awayPoss, m.elapsed ?? 1,
+      snap ?? null, now, snapTs,
+    );
 
     return {
       fixtureId:         m.fixtureId,
@@ -1256,13 +1380,16 @@ router.get("/trader", (req, res) => {
       totalSoT,
       totalDA,
       totalShots,
+      totalCorners,
       shotsDelta,
       attacksDelta,
+      ...momentum,
     };
   });
 
-  // Module 1: Hot Ranking (top 5 by goalPressureScore)
+  // Module 1: Hot Ranking (top 5 by goalPressureScore, exclude 0-stat matches)
   const hotRanking = [...processed]
+    .filter(m => m.goalPressureScore > 0)
     .sort((a, b) => b.goalPressureScore - a.goalPressureScore)
     .slice(0, 5);
 
@@ -1276,8 +1403,11 @@ router.get("/trader", (req, res) => {
     }
   }
 
-  // Module 3: Goal Alert
-  const goalAlerts = processed.filter(m => m.shotsDelta >= 2 && m.attacksDelta >= 6);
+  // Module 3: Goal Alert — momentum-based, quality-filtered
+  // Quality filter: skip matches with no stats (0 SoT = defensive/no data)
+  const goalAlerts = processed
+    .filter(m => m.alertLevel >= 1 && m.totalSoT > 0 && m.goalPressureScore >= 5)
+    .sort((a, b) => b.alertLevel - a.alertLevel || b.goalProb - a.goalProb);
 
   return res.json({
     hotRanking,
