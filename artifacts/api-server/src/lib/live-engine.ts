@@ -38,7 +38,9 @@ const PRIORITY_LEAGUE_IDS = new Set([
   40, 141, 79, 136, 62, 72,   // Tier-2 domestic
 ]);
 
-const MAX_LIVE_FIXTURES = 30; // hard API-budget cap per cycle (Performance Rules spec)
+const MAX_LIVE_FIXTURES    = 30; // total fixtures tracked in live store (Performance Rules spec)
+const MAX_SCANNER_FIXTURES = 25; // max stats+events fetched per worker cycle (scanner cap)
+let   scanQueueOffset      = 0;  // round-robin pointer so all 30 get coverage over time
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -194,7 +196,7 @@ async function fetchStatsForFixture(fixtureId: number): Promise<void> {
 
 async function fetchEventsForFixture(fixtureId: number): Promise<void> {
   const existing = liveEventsStore.get(fixtureId);
-  if (existing && Date.now() - existing.ts < 20_000) return; // 20 s freshness (spec)
+  if (existing && Date.now() - existing.ts < 30_000) return; // 30 s freshness (spec)
 
   const json = await fetchLiveApi(`/fixtures/events?fixture=${fixtureId}`);
   if (!json?.response) return;
@@ -215,6 +217,7 @@ async function fetchEventsForFixture(fixtureId: number): Promise<void> {
 
 // ── Priority sorter ────────────────────────────────────────────────────────────
 
+/** Returns up to MAX_LIVE_FIXTURES fixture IDs, priority leagues first. */
 function prioritisedIds(): number[] {
   const all = [...liveMatchesStore.values()];
   all.sort((a, b) => {
@@ -225,10 +228,35 @@ function prioritisedIds(): number[] {
   return all.slice(0, MAX_LIVE_FIXTURES).map(m => m.fixtureId);
 }
 
-// ── Worker 3 — stats + events every 60 s ──────────────────────────────────────
+/**
+ * Returns up to MAX_SCANNER_FIXTURES (25) IDs for the current worker cycle.
+ * When there are ≤25 live matches: returns all of them.
+ * When there are 26-30: always includes top-priority half, rotates the remainder
+ * so every match gets stats/events coverage over successive cycles.
+ */
+function scannerIds(): number[] {
+  const all = prioritisedIds(); // up to 30, already priority-sorted
+  if (all.length <= MAX_SCANNER_FIXTURES) return all;
+
+  // Split into a fixed priority block and a rotating overflow block
+  const fixedCount    = Math.ceil(MAX_SCANNER_FIXTURES * 0.7); // 17 always-included
+  const rotatingSlots = MAX_SCANNER_FIXTURES - fixedCount;      // 8 rotating
+  const overflowPool  = all.slice(fixedCount);                  // matches beyond the fixed block
+
+  const start   = (scanQueueOffset * rotatingSlots) % overflowPool.length;
+  const rotating = [
+    ...overflowPool.slice(start),
+    ...overflowPool.slice(0, start),
+  ].slice(0, rotatingSlots);
+
+  scanQueueOffset++;
+  return [...all.slice(0, fixedCount), ...rotating];
+}
+
+// ── Worker 3 — stats + events every 30 s ──────────────────────────────────────
 
 async function runLiveDataWorker(): Promise<void> {
-  const ids = prioritisedIds();
+  const ids = scannerIds(); // capped at MAX_SCANNER_FIXTURES (25)
   if (ids.length === 0) return;
 
   // Interleave stats + events to spread API calls
@@ -240,7 +268,7 @@ async function runLiveDataWorker(): Promise<void> {
   await Promise.allSettled(tasks);
 
   console.log(
-    `[live-engine] worker — ${ids.length} fixtures | ` +
+    `[live-engine] worker — scanning ${ids.length}/${liveMatchesStore.size} fixtures | ` +
     `stats: ${liveStatsStore.size} | events: ${liveEventsStore.size}`
   );
 }
@@ -276,7 +304,8 @@ function evictOldFinishedMatches(): void {
 export function updateFromApiResponse(fixtures: any[]): void {
   if (!Array.isArray(fixtures)) return;
 
-  const seenIds = new Set<number>();
+  const seenIds    = new Set<number>();
+  const changedIds = new Set<number>(); // matches where score or elapsed changed
 
   for (const f of fixtures) {
     const id: number = f.fixture?.id;
@@ -286,13 +315,12 @@ export function updateFromApiResponse(fixtures: any[]): void {
 
     // Never add finished/cancelled matches to the live store
     if (FINISHED_STATUSES.has(status)) {
-      // If it was previously live, evict and promote to finished
       const existing = liveMatchesStore.get(id);
       if (existing) {
         evictLiveFixture(id, { ...existing, status });
         console.log(`[live-engine] match ${id} transitioned to ${status} — moved to finished`);
       }
-      continue; // do NOT add to seenIds so the eviction below also handles it
+      continue;
     }
 
     // Only accept genuine live statuses
@@ -302,6 +330,17 @@ export function updateFromApiResponse(fixtures: any[]): void {
     }
 
     seenIds.add(id);
+
+    const newHome    = f.goals?.home        ?? 0;
+    const newAway    = f.goals?.away        ?? 0;
+    const newElapsed = f.fixture?.status?.elapsed ?? null;
+
+    // Smart refresh: flag matches where meaningful state changed
+    const prev = liveMatchesStore.get(id);
+    if (!prev || prev.homeScore !== newHome || prev.awayScore !== newAway || prev.elapsed !== newElapsed) {
+      changedIds.add(id);
+    }
+
     liveMatchesStore.set(id, {
       fixtureId:    id,
       homeTeam:     f.teams?.home?.name  ?? "",
@@ -310,24 +349,20 @@ export function updateFromApiResponse(fixtures: any[]): void {
       awayTeamId:   f.teams?.away?.id    ?? 0,
       homeTeamLogo: f.teams?.home?.logo  ?? "",
       awayTeamLogo: f.teams?.away?.logo  ?? "",
-      homeScore:    f.goals?.home        ?? 0,
-      awayScore:    f.goals?.away        ?? 0,
+      homeScore:    newHome,
+      awayScore:    newAway,
       league:       f.league?.name       ?? "",
       leagueId:     f.league?.id         ?? 0,
       leagueLogo:   f.league?.logo       ?? "",
       status,
-      elapsed:      f.fixture?.status?.elapsed ?? null,
+      elapsed:      newElapsed,
       ts:           Date.now(),
     });
   }
 
   // Evict matches that disappeared from the live feed
-  // API-Football stops including a match in /fixtures?live=all once it finishes,
-  // so "disappeared" almost always means "finished". We always promote these to
-  // the finished store using the last known score/status.
   for (const [id, fixture] of liveMatchesStore) {
     if (!seenIds.has(id)) {
-      // Add to finished store if not already there (use "FT" as fallback status)
       if (!finishedMatchesStore.has(id)) {
         finishedMatchesStore.set(id, {
           ...fixture,
@@ -341,18 +376,28 @@ export function updateFromApiResponse(fixtures: any[]): void {
     }
   }
 
-  // Background: fetch stats + events for priority matches
-  const ids = prioritisedIds();
-  if (ids.length > 0) {
+  // ── Smart background refresh ───────────────────────────────────────────────
+  // Only trigger immediate stats+events for matches where something actually changed.
+  // Unchanged matches are covered by the 30 s worker via the TTL-based freshness check.
+  // Always include matches whose stats are stale beyond the 45 s window regardless.
+  const scanCandidates = scannerIds(); // up to 25, priority-sorted
+  const toFetch = scanCandidates.filter(id => {
+    if (changedIds.has(id)) return true;           // score/elapsed changed → fetch now
+    const stats = liveStatsStore.get(id);
+    return !stats || Date.now() - stats.ts > 45_000; // stale stats → fetch now
+  });
+
+  if (toFetch.length > 0) {
     const tasks = [
-      ...ids.map(fetchStatsForFixture),
-      ...ids.map(fetchEventsForFixture),
+      ...toFetch.map(fetchStatsForFixture),
+      ...toFetch.map(fetchEventsForFixture),
     ];
     Promise.allSettled(tasks).then(() => {
       console.log(
         `[live-engine] ${liveMatchesStore.size} live | ` +
-        `${liveStatsStore.size} stats | ${liveEventsStore.size} events | ` +
-        `${finishedMatchesStore.size} recently finished`
+        `smart-refreshed ${toFetch.length} (${changedIds.size} changed) | ` +
+        `stats: ${liveStatsStore.size} | events: ${liveEventsStore.size} | ` +
+        `finished: ${finishedMatchesStore.size}`
       );
     });
   }
