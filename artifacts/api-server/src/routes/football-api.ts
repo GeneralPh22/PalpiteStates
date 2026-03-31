@@ -2512,6 +2512,44 @@ function over15Prob(lambdaHome: number, lambdaAway: number): number {
   return Math.min(0.95, Math.max(0.05, 1 - p00 - p10 - p01));
 }
 
+/** Recent form score from API team stats string ("WWDLW") → 0–1 */
+function teamFormScore(form: string | null | undefined): number {
+  if (!form || form.length === 0) return 0.5;
+  const recent = form.slice(-5).split("");
+  const score  = recent.reduce((s, r) => s + (r === "W" ? 1 : r === "D" ? 0.5 : 0), 0);
+  return score / Math.max(recent.length, 1);
+}
+
+/** Dynamic reason text for each pick market */
+function accumulatorReason(
+  marketKey: string,
+  homeName: string,
+  awayName: string,
+  lambdaHome: number,
+  lambdaAway: number,
+  probs: ReturnType<typeof calcMatchProbabilities>["probabilities"],
+): string {
+  const xg = (lambdaHome + lambdaAway).toFixed(1);
+  switch (marketKey) {
+    case "over15":
+      return `${xg} gols esperados — alto volume ofensivo das duas equipes`;
+    case "btts":
+      return `Ambas equipes com regularidade de gols na temporada 2025`;
+    case "corners":
+      return `Jogo ofensivo (${xg} gols esperados) com tendência a muitos escanteios`;
+    case "homeWin":
+      return `${homeName} favorito em casa — ${Math.round(probs.homeWin * 100)}% de probabilidade de vitória`;
+    case "awayWin":
+      return `${awayName} favorito como visitante — ${Math.round(probs.awayWin * 100)}% de probabilidade`;
+    case "dcHome":
+      return `Mandante com vantagem — dupla chance reduz risco (${Math.round((probs.homeWin + probs.draw) * 100)}%)`;
+    case "dcAway":
+      return `Visitante em evidência — dupla chance reduz risco (${Math.round((probs.awayWin + probs.draw) * 100)}%)`;
+    default:
+      return `Alta probabilidade pela análise estatística da temporada 2025`;
+  }
+}
+
 router.get("/accumulator-of-the-day", async (_req, res) => {
   try {
     if (accumulatorCache && Date.now() - accumulatorCache.ts < ACCUMULATOR_TTL) {
@@ -2519,29 +2557,30 @@ router.get("/accumulator-of-the-day", async (_req, res) => {
     }
 
     const { fixtures: prelive } = await getTopLeaguePrelivFromDB(TOP_SIX_LEAGUES);
-
     if (prelive.length === 0) {
-      return res.json({ available: false, picks: [], combinedOdds: null });
+      return res.json({ available: false, picks: [], combinedOdds: null, overallConfidence: null });
     }
 
-    type AccumPick = {
-      fixtureId: number;
-      homeTeam: string;
-      awayTeam: string;
+    type CandidatePick = {
+      fixtureId:    number;
+      homeTeam:     string;
+      awayTeam:     string;
       homeTeamLogo: string;
       awayTeamLogo: string;
-      league: string;
-      leagueLogo: string;
-      kickoff: string;
-      market: string;
-      marketKey: string;
-      confidence: number;
-      fairOdd: number;
+      league:       string;
+      leagueLogo:   string;
+      kickoff:      string;
+      market:       string;
+      marketKey:    string;
+      confidence:   number;
+      fairOdd:      number;
+      reason:       string;
+      _score:       number; // internal ranking only — stripped before response
     };
 
-    const candidates: AccumPick[] = [];
+    const candidates: CandidatePick[] = [];
 
-    for (const f of prelive.slice(0, 25)) {
+    for (const f of prelive.slice(0, 30)) {
       if (apiSuspended) break;
 
       const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
@@ -2550,83 +2589,111 @@ router.get("/accumulator-of-the-day", async (_req, res) => {
       ]);
 
       if (!homeOk || !awayOk) continue;
-
-      const hs = homeData?.response;
+      const hs  = homeData?.response;
       const as_ = awayData?.response;
       if (!hs || !as_) continue;
 
-      const hFor     = hs.goals?.for?.average?.home  ?? hs.goals?.for?.average?.total  ?? null;
-      const hAgainst = hs.goals?.against?.average?.home ?? hs.goals?.against?.average?.total ?? null;
-      const aFor     = as_.goals?.for?.average?.away ?? as_.goals?.for?.average?.total  ?? null;
-      const aAgainst = as_.goals?.against?.average?.away ?? as_.goals?.against?.average?.total ?? null;
+      // Goal averages — prefer venue-specific, fall back to overall
+      const hFor     = parseFloat(String(hs.goals?.for?.average?.home     ?? hs.goals?.for?.average?.total     ?? "1.3"));
+      const hAgainst = parseFloat(String(hs.goals?.against?.average?.home  ?? hs.goals?.against?.average?.total  ?? "1.3"));
+      const aFor     = parseFloat(String(as_.goals?.for?.average?.away     ?? as_.goals?.for?.average?.total     ?? "1.3"));
+      const aAgainst = parseFloat(String(as_.goals?.against?.average?.away ?? as_.goals?.against?.average?.total ?? "1.3"));
+      if (isNaN(hFor) || isNaN(hAgainst) || isNaN(aFor) || isNaN(aAgainst)) continue;
 
-      if (!hFor || !hAgainst || !aFor || !aAgainst) continue;
+      // Defensive filter: skip matches where BOTH teams have >45% clean-sheet rate
+      const hPlayed    = hs.fixtures?.played?.total  ?? 0;
+      const aPlayed    = as_.fixtures?.played?.total ?? 0;
+      const hCleanRate = hPlayed > 0 ? (hs.clean_sheet?.total  ?? 0) / hPlayed : 0;
+      const aCleanRate = aPlayed > 0 ? (as_.clean_sheet?.total ?? 0) / aPlayed : 0;
+      if (hCleanRate > 0.45 && aCleanRate > 0.45) continue;
 
-      const hAtt = parseFloat(hFor as string);
-      const hDef = parseFloat(hAgainst as string);
-      const aAtt = parseFloat(aFor as string);
-      const aDef = parseFloat(aAgainst as string);
+      const result    = calcMatchProbabilities(hFor, hAgainst, aFor, aAgainst);
+      const p         = result.probabilities;
+      const o15       = over15Prob(result.lambdaHome, result.lambdaAway);
+      const dcHome    = Math.min(0.95, p.homeWin + p.draw);
+      const dcAway    = Math.min(0.95, p.awayWin + p.draw);
 
-      if (isNaN(hAtt) || isNaN(hDef) || isNaN(aAtt) || isNaN(aDef)) continue;
-
-      const result = calcMatchProbabilities(hAtt, hDef, aAtt, aDef);
-      const p = result.probabilities;
-      const o15 = over15Prob(result.lambdaHome, result.lambdaAway);
-      const dcHome = Math.min(0.95, p.homeWin + p.draw);
-      const dcAway = Math.min(0.95, p.awayWin + p.draw);
-
+      // Allowed markets (spec): Over 1.5, BTTS, Corners >8.5, Match Winner, Double Chance
+      const MIN_PROB = 0.60;
       const marketOptions = [
-        { market: "Mais de 1.5 Gols",   marketKey: "over15",  prob: o15 },
-        { market: "Mais de 2.5 Gols",   marketKey: "over25",  prob: p.over25 },
-        { market: "Ambas Marcam",        marketKey: "btts",    prob: p.btts },
-        { market: "Vitória Mandante",    marketKey: "homeWin", prob: p.homeWin },
-        { market: "Dupla Chance 1X",     marketKey: "dcHome",  prob: dcHome },
-        { market: "Dupla Chance X2",     marketKey: "dcAway",  prob: dcAway },
+        { market: "Mais de 1.5 Gols",      marketKey: "over15",  prob: o15          },
+        { market: "Ambas Marcam",           marketKey: "btts",    prob: p.btts       },
+        { market: "Mais de 8.5 Escanteios", marketKey: "corners", prob: p.cornerOver9 },
+        { market: "Vitória Mandante",       marketKey: "homeWin", prob: p.homeWin    },
+        { market: "Vitória Visitante",      marketKey: "awayWin", prob: p.awayWin    },
+        { market: "Dupla Chance 1X",        marketKey: "dcHome",  prob: dcHome       },
+        { market: "Dupla Chance X2",        marketKey: "dcAway",  prob: dcAway       },
       ];
 
-      const eligible = marketOptions.filter(m => m.prob >= 0.65).sort((a, b) => b.prob - a.prob);
+      const eligible = marketOptions.filter(m => m.prob >= MIN_PROB).sort((a, b) => b.prob - a.prob);
       if (eligible.length === 0) continue;
 
       const best = eligible[0];
+
+      // Value score: probability + form bonus + attacking bonus (for ranking)
+      const formBonus     = (teamFormScore(hs.form) + teamFormScore(as_.form)) / 2;
+      const attackBonus   = Math.min(1, (result.expectedGoals - 1.8) / 2.0);
+      const valueScore    = best.prob * (1 + formBonus * 0.15 + attackBonus * 0.10);
+
       candidates.push({
-        fixtureId: f.id,
-        homeTeam: f.homeTeam.name,
-        awayTeam: f.awayTeam.name,
+        fixtureId:    f.id,
+        homeTeam:     f.homeTeam.name,
+        awayTeam:     f.awayTeam.name,
         homeTeamLogo: f.homeTeam.logo,
         awayTeamLogo: f.awayTeam.logo,
-        league: f.league.name,
-        leagueLogo: f.league.logo,
-        kickoff: f.date,
-        market: best.market,
-        marketKey: best.marketKey,
-        confidence: Math.round(best.prob * 100),
-        fairOdd: parseFloat((1 / best.prob).toFixed(2)),
+        league:       f.league.name,
+        leagueLogo:   f.league.logo,
+        kickoff:      f.date,
+        market:       best.market,
+        marketKey:    best.marketKey,
+        confidence:   Math.round(best.prob * 100),
+        fairOdd:      parseFloat((1 / best.prob).toFixed(2)),
+        reason:       accumulatorReason(best.marketKey, f.homeTeam.name, f.awayTeam.name,
+                        result.lambdaHome, result.lambdaAway, p),
+        _score:       valueScore,
       });
     }
 
-    candidates.sort((a, b) => b.confidence - a.confidence);
-    const seen = new Set<number>();
-    const picks: AccumPick[] = [];
+    // Sort by value score
+    candidates.sort((a, b) => b._score - a._score);
+
+    // Pick 2–4 with market diversity (max 2 of same market key)
+    const marketCounts = new Map<string, number>();
+    const seenIds      = new Set<number>();
+    const picks: CandidatePick[] = [];
+
     for (const c of candidates) {
-      if (!seen.has(c.fixtureId)) {
-        seen.add(c.fixtureId);
-        picks.push(c);
-        if (picks.length === 3) break;
-      }
+      if (seenIds.has(c.fixtureId)) continue;
+      const mCount = marketCounts.get(c.marketKey) ?? 0;
+      if (mCount >= 2) continue;
+      seenIds.add(c.fixtureId);
+      marketCounts.set(c.marketKey, mCount + 1);
+      picks.push(c);
+      if (picks.length === 4) break;
     }
+
+    // Trim to target combined odds ≤ 3.50
+    const combinedFn = (ps: CandidatePick[]) => ps.reduce((acc, pk) => acc * pk.fairOdd, 1);
+    while (picks.length > 2 && combinedFn(picks) > 3.50) picks.pop();
 
     if (picks.length < 2) {
-      return res.json({ available: false, picks: [], combinedOdds: null });
+      return res.json({ available: false, picks: [], combinedOdds: null, overallConfidence: null });
     }
 
-    const combinedOdds = parseFloat(picks.reduce((acc, pk) => acc * pk.fairOdd, 1).toFixed(2));
-    const data = { picks, combinedOdds, generatedAt: new Date().toISOString() };
+    const combinedOdds      = parseFloat(combinedFn(picks).toFixed(2));
+    const overallConfidence = Math.round(picks.reduce((s, pk) => s + pk.confidence, 0) / picks.length);
+
+    // Strip internal ranking field before sending
+    const cleanPicks = picks.map(({ _score: _, ...rest }) => rest);
+
+    const data = { picks: cleanPicks, combinedOdds, overallConfidence, generatedAt: new Date().toISOString() };
     accumulatorCache = { data, ts: Date.now() };
+    console.log(`[accumulator] Built ${picks.length} picks — odds: ${combinedOdds} — confidence: ${overallConfidence}%`);
 
     return res.json({ available: true, ...data, cached: false });
   } catch (err: any) {
     console.error("[accumulator-of-the-day]", err.message);
-    return res.json({ available: false, picks: [], combinedOdds: null });
+    return res.json({ available: false, picks: [], combinedOdds: null, overallConfidence: null });
   }
 });
 
