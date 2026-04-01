@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Radio, ChevronDown, ChevronUp, Flame, AlertTriangle, Loader2, Wifi, WifiOff } from "lucide-react";
+import { Radio, ChevronDown, ChevronUp, Flame, AlertTriangle, Loader2, Wifi, WifiOff, PauseCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -1444,6 +1444,90 @@ function LiveGoalScanner({ matches }: { matches: EnrichedMatch[] }) {
   );
 }
 
+// ── Inactivity Pause Hook ──────────────────────────────────────────────────────
+/**
+ * Detects user inactivity. After `timeoutMs` ms with no interaction (scroll,
+ * click, key, mouse-move, touch), `isPaused` becomes true.
+ * Any user interaction resets the timer and sets `isPaused` to false.
+ */
+function useInactivityPause(timeoutMs: number): { isPaused: boolean } {
+  const [isPaused, setIsPaused] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const resetActivity = useCallback(() => {
+    setIsPaused(false);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setIsPaused(true), timeoutMs);
+  }, [timeoutMs]);
+
+  useEffect(() => {
+    const events = ["scroll", "click", "keydown", "mousemove", "touchstart"] as const;
+    events.forEach(e => window.addEventListener(e, resetActivity, { passive: true }));
+    resetActivity(); // arm the timer immediately
+    return () => {
+      events.forEach(e => window.removeEventListener(e, resetActivity));
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [resetActivity]);
+
+  return { isPaused };
+}
+
+// ── Visible Match Card Wrapper ─────────────────────────────────────────────────
+/**
+ * Renders a lightweight placeholder for match cards that are scrolled off-screen.
+ * Once the card enters the viewport (with 300px pre-load margin), it renders the
+ * full LiveMatchCard with all GPI/stats/momentum content.
+ * Each wrapper owns its own IntersectionObserver — minimal overhead for ≤30 cards.
+ */
+function VisibleMatchCard({
+  match,
+  idx,
+  pressureResult,
+}: {
+  match: EnrichedMatch;
+  idx: number;
+  pressureResult: PressureResult | undefined;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible]   = useState(idx < 4); // first 4 assumed visible on load
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsVisible(entry.isIntersecting),
+      { rootMargin: "300px 0px" } // preload 300px before card enters viewport
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={containerRef}>
+      {isVisible ? (
+        <LiveMatchCard match={match} idx={idx} pressureResult={pressureResult} />
+      ) : (
+        // Lightweight placeholder — preserves grid height without expensive renders
+        <div className="rounded-2xl border border-white/[0.05] bg-white/[0.02] p-3 flex items-center gap-2 min-h-[72px]">
+          <div className="flex-1 min-w-0">
+            <div className="text-[11px] text-white/50 truncate">{match.homeTeam}</div>
+            <div className="flex items-center gap-1.5 my-0.5">
+              <span className="text-sm font-black text-white tabular-nums">
+                {match.homeScore} – {match.awayScore}
+              </span>
+              <span className="text-[9px] text-red-400 font-semibold">
+                {statusLabel(match.status, match.elapsed)}
+              </span>
+            </div>
+            <div className="text-[11px] text-white/50 truncate">{match.awayTeam}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── WebSocket hook ─────────────────────────────────────────────────────────────
 /**
  * Connects to the live WebSocket server. When the server pushes a live:update
@@ -1521,10 +1605,32 @@ function useLiveWebSocket(onUpdate: (data: LiveData) => void): boolean {
 export default function LiveMatchesSection() {
   const queryClient = useQueryClient();
 
-  // WS → writes directly into the query cache for instant UI update
+  // ── Inactivity pause ───────────────────────────────────────────────────────
+  // After 60 s of no user interaction, incoming WS updates are buffered instead
+  // of applied immediately. The buffer is flushed the moment the user interacts.
+  const { isPaused } = useInactivityPause(60_000);
+  const isPausedRef  = useRef(false);
+  const pendingDataRef = useRef<LiveData | null>(null);
+
+  // Sync ref so the WS callback (memoised) can read the current value
+  useEffect(() => {
+    isPausedRef.current = isPaused;
+    if (!isPaused && pendingDataRef.current) {
+      // User just resumed — apply the most recent buffered update
+      queryClient.setQueryData(["live", "matches"], pendingDataRef.current);
+      pendingDataRef.current = null;
+    }
+  }, [isPaused, queryClient]);
+
+  // WS → writes directly into the query cache for instant UI update,
+  //      or buffers the payload while the tab is paused.
   const wsConnected = useLiveWebSocket(
     useCallback(
       (freshData: LiveData) => {
+        if (isPausedRef.current) {
+          pendingDataRef.current = freshData; // buffer — do not re-render
+          return;
+        }
         queryClient.setQueryData(["live", "matches"], freshData);
       },
       [queryClient]
@@ -1620,8 +1726,19 @@ export default function LiveMatchesSection() {
           }
         </span>
 
+        {/* Auto-pause indicator — shown when live updates are buffered */}
+        {isPaused && (
+          <span
+            className="flex items-center gap-1 text-[9px] text-white/30 ml-1"
+            title="Atualizações pausadas por inatividade. Interaja para retomar."
+          >
+            <PauseCircle className="w-3 h-3" />
+            Pausado
+          </span>
+        )}
+
         {/* Stale data warning */}
-        {isStaleData && (
+        {isStaleData && !isPaused && (
           <span className="flex items-center gap-1 text-[9px] text-amber-400/70 ml-1">
             <AlertTriangle className="w-3 h-3" />
             Dados ao vivo atualizando...
@@ -1662,7 +1779,7 @@ export default function LiveMatchesSection() {
       {/* ── All Live Matches ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
         {enrichedMatches.map((match, i) => (
-          <LiveMatchCard
+          <VisibleMatchCard
             key={match.fixtureId}
             match={match}
             idx={i}

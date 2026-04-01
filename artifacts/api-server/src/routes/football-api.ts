@@ -109,9 +109,21 @@ function trackApiCall(): void {
   dailyCallCount++;
 }
 
-/** Returns true when usage is ≥80% of DAILY_LIMIT — triggers adaptive throttling. */
+/**
+ * Returns true when usage is ≥80% of DAILY_LIMIT.
+ * Used for logging / monitoring only — non-critical soft threshold.
+ */
 function isThrottled(): boolean {
   return dailyCallCount >= Math.floor(DAILY_LIMIT * 0.80);
+}
+
+/**
+ * Returns true when usage is ≥85% of DAILY_LIMIT — EMERGENCY mode.
+ * Triggers: live polling → 90 s; all background jobs skip the API.
+ * Live data still served from in-memory store; background cache stays valid.
+ */
+function isEmergency(): boolean {
+  return dailyCallCount >= Math.floor(DAILY_LIMIT * 0.85);
 }
 
 // ── Scanner call throttle ─────────────────────────────────────────────────────
@@ -465,6 +477,12 @@ async function fetchAndCacheFixtures(): Promise<number> {
 function scheduleBackgroundRefresh() {
   async function run() {
     if (bgRefreshRunning) return;
+    // Emergency mode: skip background fixture refresh to preserve daily API quota.
+    // The DB cache from the last successful run stays valid for the frontend.
+    if (isEmergency()) {
+      console.warn(`[bg-refresh] 🚨 Emergency mode — skipping cycle (${dailyCallCount}/${DAILY_LIMIT} calls used)`);
+      return;
+    }
     bgRefreshRunning = true;
     const start = Date.now();
     try {
@@ -499,6 +517,12 @@ let lastPreliveRefresh = 0;
 
 async function fetchTopLeaguePrelive(forceMissing?: number[]): Promise<void> {
   if (preliveRefreshRunning) return;
+  // Emergency mode: skip API calls — the DB already has pre-live fixtures from last run.
+  if (isEmergency()) {
+    console.warn(`[prelive-refresh] 🚨 Emergency — skipping API calls (${dailyCallCount}/${DAILY_LIMIT} used)`);
+    lastPreliveRefresh = Date.now();
+    return;
+  }
   preliveRefreshRunning = true;
 
   try {
@@ -612,6 +636,11 @@ const FEATURED_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 async function warmupFeaturedCache(): Promise<void> {
   if (featuredRefreshRunning) return;
+  // Emergency mode: skip API calls — serve from existing in-memory cache (if available).
+  if (isEmergency()) {
+    console.warn(`[featured-cache] 🚨 Emergency — skipping refresh (${dailyCallCount}/${DAILY_LIMIT} used)`);
+    return;
+  }
   featuredRefreshRunning = true;
   try {
     const { fixtures: prelive } = await getTopLeaguePrelivFromDB(TOP_SIX_LEAGUES);
@@ -878,10 +907,20 @@ async function refreshLiveMatches() {
 let liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleLiveRefresh(): void {
-  const delay = isThrottled() ? 90_000 : 60_000;
-  if (isThrottled()) {
-    console.warn(`[live-refresh] Usage ≥80% (${dailyCallCount}/${DAILY_LIMIT}) — backing off to 90 s`);
+  const emergency = isEmergency();
+  const throttled  = isThrottled();
+  const delay      = emergency ? 90_000 : 60_000;
+
+  if (emergency) {
+    console.warn(
+      `[live-refresh] 🚨 EMERGENCY (${dailyCallCount}/${DAILY_LIMIT}, ≥85%) — live → 90 s; bg jobs paused`
+    );
+  } else if (throttled) {
+    console.warn(
+      `[live-refresh] ⚠ Throttled (${dailyCallCount}/${DAILY_LIMIT}, ≥80%) — monitoring quota`
+    );
   }
+
   liveRefreshTimer = setTimeout(async () => {
     await refreshLiveMatches().catch(() => {});
     scheduleLiveRefresh();
@@ -3319,6 +3358,7 @@ router.get("/live/stats/:fixtureId", (req, res) => {
 // ── api-status ─────────────────────────────────────────────────────────────────
 router.get("/api-status", (_req, res) => {
   const usagePct = DAILY_LIMIT > 0 ? Math.round(dailyCallCount / DAILY_LIMIT * 100) : 0;
+  const emergency = isEmergency();
   res.json({
     suspended:      apiSuspended,
     cacheSize:      cache.size,
@@ -3327,7 +3367,9 @@ router.get("/api-status", (_req, res) => {
     dailyCallLimit: DAILY_LIMIT,
     usagePercent:   usagePct,
     throttleActive: isThrottled(),
-    pollInterval:   isThrottled() ? 90 : 60,
+    emergencyMode:  emergency,
+    pollInterval:   emergency ? 90 : 60,
+    bgJobsActive:   !emergency,
   });
 });
 

@@ -4,6 +4,18 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 13 — Advanced API Reduction System)
+
+- **football-api.ts** — Emergency mode architecture (two-tier quota management):
+  - `isThrottled()` at 80% → monitoring/logging only; `isEmergency()` at 85% → full restriction
+  - **Emergency guards added to all background jobs**: `scheduleBackgroundRefresh`, `fetchTopLeaguePrelive`, `warmupFeaturedCache` — all skip their API cycles when `isEmergency()` returns true, serving from in-memory/DB cache instead
+  - Live polling scheduler (`scheduleLiveRefresh`) already backs off to 90s at 80% (spec-compliant); emergency log messages differentiated
+  - `/api-status` endpoint now includes `emergencyMode`, `bgJobsActive` fields
+- **LiveMatchesSection.tsx** — Three new frontend systems:
+  1. **Auto-pause** (`useInactivityPause`): tracks scroll/click/keydown/mousemove/touchstart; after 60 s inactivity, `isPaused = true` → incoming WS payloads buffered in `pendingDataRef` instead of applied; on resume, flushes buffer immediately. Shows "Pausado" badge with `PauseCircle` icon in header.
+  2. **Visible match tracking** (`VisibleMatchCard`): each match card wrapped with `IntersectionObserver` (300px preload margin); cards outside viewport render a lightweight placeholder (teams, score, minute only); cards inside render the full `LiveMatchCard` with GPI/stats/momentum. First 4 cards assumed visible on load.
+  3. **Progressive stale warning**: stale data warning (`AlertTriangle`) suppressed when paused (since data intentionally not updating)
+
 ## Recent Changes (Session 12 — API Optimization: Quota Management)
 
 - **football-api.ts** — Three targeted optimizations to extend the free-tier 100-call/day quota:
