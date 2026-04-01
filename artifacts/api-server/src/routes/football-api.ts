@@ -77,19 +77,42 @@ const SCANNER_LEAGUES = [
 ];
 
 const cache = new Map<string, { data: unknown; ts: number }>();
-const ODDS_TTL         =  5 * 60 * 1000;       //  5 min  — odds
-const STATS_TTL        = 10 * 60 * 1000;       // 10 min  — pre-match statistics
-const MATCH_TTL        =  2 * 60 * 1000;       //  2 min  — match payload (fallback default)
-const FIXTURE_LIST_TTL = 10 * 60 * 1000;       // 10 min  — today's fixture lists (spec)
-const PRELIVE_TTL      = 60 * 1000;            // 60 s    — pre-live fixtures (in-memory dedup)
-const SQUAD_TTL        = 24 * 60 * 60 * 1000;  // 24 h    — squad rosters
-const FORM_TTL         = 12 * 60 * 60 * 1000;  // 12 h    — player performance stats (spec)
-const LEAGUES_TTL      =  6 * 60 * 60 * 1000;  //  6 h    — league data (spec)
-const TEAMS_TTL        =  6 * 60 * 60 * 1000;  //  6 h    — team data (spec)
+const ODDS_TTL           =  5 * 60 * 1000;       //  5 min  — odds
+const STATS_TTL          = 10 * 60 * 1000;       // 10 min  — per-fixture in-match statistics
+const SEASON_STATS_TTL   = 12 * 60 * 60 * 1000;  // 12 h    — team/player season stats (spec)
+const MATCH_TTL          =  2 * 60 * 1000;        //  2 min  — match payload (fallback default)
+const FIXTURE_LIST_TTL   = 10 * 60 * 1000;        // 10 min  — today's fixture lists (spec)
+const PRELIVE_TTL        = 60 * 1000;             // 60 s    — pre-live fixtures (in-memory dedup)
+const SQUAD_TTL          = 24 * 60 * 60 * 1000;   // 24 h    — squad rosters
+const FORM_TTL           = 12 * 60 * 60 * 1000;   // 12 h    — player performance stats (spec)
+const LEAGUES_TTL        =  6 * 60 * 60 * 1000;   //  6 h    — league data (spec)
+const TEAMS_TTL          =  6 * 60 * 60 * 1000;   //  6 h    — team data (spec)
 
 let apiSuspended = false;
 const SUSPENDED_CACHE_TTL = 5 * 60 * 1000;
 let lastSuspendedCheck = 0;
+
+// ── Daily request counter ──────────────────────────────────────────────────────
+// Tracks API calls made today and provides adaptive throttling at 80% of the limit.
+// DAILY_LIMIT: set API_DAILY_LIMIT env var (default 100 — API-Football free tier).
+const DAILY_LIMIT  = parseInt(process.env.API_DAILY_LIMIT ?? "100", 10);
+let dailyCallCount = 0;
+let dailyCounterDate = new Date().toDateString();
+
+function trackApiCall(): void {
+  const today = new Date().toDateString();
+  if (today !== dailyCounterDate) {
+    console.log(`[api-counter] New day — resetting counter (was ${dailyCallCount} calls)`);
+    dailyCallCount   = 0;
+    dailyCounterDate = today;
+  }
+  dailyCallCount++;
+}
+
+/** Returns true when usage is ≥80% of DAILY_LIMIT — triggers adaptive throttling. */
+function isThrottled(): boolean {
+  return dailyCallCount >= Math.floor(DAILY_LIMIT * 0.80);
+}
 
 // ── Scanner call throttle ─────────────────────────────────────────────────────
 // Limits scanner API bursts to ≤30 calls per run; resets between scans
@@ -110,7 +133,7 @@ async function scannerApiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: a
   return apiFetch(path, ttl);
 }
 
-const LIVE_TTL = 30 * 1000;            // 30 s — matches the 30 s poll interval (spec)
+const LIVE_TTL = 30 * 1000;            // 30 s — < 60 s poll interval; ensures fresh data each cycle
 
 // ── Core fetch: used for fixture/match data — manages global suspension flag ───
 async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok: boolean; stale?: boolean }> {
@@ -132,6 +155,7 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
   }
 
   try {
+    trackApiCall(); // count every real outbound API request
     const res = await fetch(`${API_BASE}${path}`, {
       method: "GET",
       headers: {
@@ -611,8 +635,8 @@ async function warmupFeaturedCache(): Promise<void> {
       if (apiSuspended) break;
 
       const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
-        apiFetch(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
-        apiFetch(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+        apiFetch(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, SEASON_STATS_TTL),
+        apiFetch(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, SEASON_STATS_TTL),
       ]);
 
       const getAvg = (d: any, type: "for" | "against"): number => {
@@ -715,8 +739,8 @@ function scheduleFeaturedRefresh() {
 
 scheduleFeaturedRefresh();
 
-// ── Live-match 60-second poller ────────────────────────────────────────────
-// Polls /fixtures?live=all every 30 s — only when live matches exist in DB.
+// ── Live-match adaptive poller ─────────────────────────────────────────────
+// Polls /fixtures?live=all every 60 s (90 s when ≥80% daily limit used).
 // Single efficient API call; result updates those specific fixtures in DB.
 const LIVE_STATUS_CODES = new Set(["1H", "2H", "ET", "HT", "P", "BT"]);
 let liveRefreshRunning    = false;
@@ -848,19 +872,36 @@ async function refreshLiveMatches() {
   }
 }
 
-setInterval(refreshLiveMatches, 30 * 1000); // primary poll: every 30 s
+// ── Dynamic live-poll scheduler ───────────────────────────────────────────────
+// Normal: every 60 s (spec); throttled (≥80% daily limit): every 90 s.
+// Uses recursive setTimeout so the interval self-adjusts on each cycle.
+let liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-// ── 60 s outer watchdog ────────────────────────────────────────────────────────
-// Guards against setInterval stalls or the function getting permanently stuck.
-// If no refresh attempt has started in the last 60 s, force-reset and restart.
+function scheduleLiveRefresh(): void {
+  const delay = isThrottled() ? 90_000 : 60_000;
+  if (isThrottled()) {
+    console.warn(`[live-refresh] Usage ≥80% (${dailyCallCount}/${DAILY_LIMIT}) — backing off to 90 s`);
+  }
+  liveRefreshTimer = setTimeout(async () => {
+    await refreshLiveMatches().catch(() => {});
+    scheduleLiveRefresh();
+  }, delay);
+}
+
+scheduleLiveRefresh(); // start adaptive polling loop
+
+// ── 120 s outer watchdog ──────────────────────────────────────────────────────
+// Guards against stuck locks or stalled timers.
+// If no refresh attempt has been recorded in the last 120 s, force-restart.
 setInterval(() => {
   const gap = Date.now() - lastRefreshAttemptTs;
-  if (lastRefreshAttemptTs > 0 && gap > 60_000) {
+  if (lastRefreshAttemptTs > 0 && gap > 120_000) {
     console.warn(`[live-watchdog] No refresh in ${Math.round(gap / 1000)} s — force-restarting`);
-    liveRefreshRunning = false; // release any stuck lock
-    refreshLiveMatches().catch(() => {});
+    liveRefreshRunning = false;
+    if (liveRefreshTimer) { clearTimeout(liveRefreshTimer); liveRefreshTimer = null; }
+    scheduleLiveRefresh();
   }
-}, 60_000);
+}, 120_000);
 
 // ── API Health Check — every 60 s ─────────────────────────────────────────────
 // Only runs when the API is suspended (apiSuspended = true) to avoid extra calls
@@ -1508,8 +1549,8 @@ router.get("/fixture/:id/team-stats", async (req, res) => {
 
     // Fetch season stats for both teams in parallel
     const [{ data: homeSeasonData, ok: homeSeasonOk }, { data: awaySeasonData, ok: awaySeasonOk }] = await Promise.all([
-      apiFetch(`/teams/statistics?team=${homeId}&league=${leagueId}&season=2025`, STATS_TTL),
-      apiFetch(`/teams/statistics?team=${awayId}&league=${leagueId}&season=2025`, STATS_TTL),
+      apiFetch(`/teams/statistics?team=${homeId}&league=${leagueId}&season=2025`, SEASON_STATS_TTL),
+      apiFetch(`/teams/statistics?team=${awayId}&league=${leagueId}&season=2025`, SEASON_STATS_TTL),
     ]);
 
     let homeStats = buildFromSeasonStats(homeSeasonOk ? homeSeasonData?.response : null);
@@ -1533,11 +1574,11 @@ router.get("/fixture/:id/team-stats", async (req, res) => {
 
     // Fallback to last-5 fixtures if season stats still empty
     if (!homeStats) {
-      const { data: f5, ok: f5Ok } = await apiFetch(`/fixtures?team=${homeId}&last=5`, STATS_TTL);
+      const { data: f5, ok: f5Ok } = await apiFetch(`/fixtures?team=${homeId}&last=5`, SEASON_STATS_TTL);
       homeStats = buildFromLast5(f5Ok ? (f5?.response ?? []) : [], homeId);
     }
     if (!awayStats) {
-      const { data: f5, ok: f5Ok } = await apiFetch(`/fixtures?team=${awayId}&last=5`, STATS_TTL);
+      const { data: f5, ok: f5Ok } = await apiFetch(`/fixtures?team=${awayId}&last=5`, SEASON_STATS_TTL);
       awayStats = buildFromLast5(f5Ok ? (f5?.response ?? []) : [], awayId);
     }
 
@@ -1616,7 +1657,7 @@ router.get("/fixture/:id/standings", async (req, res) => {
 
     const { data: sd, ok: sdOk } = await apiFetch(
       `/standings?league=${leagueId}&season=${season}`,
-      STATS_TTL
+      TEAMS_TTL
     );
 
     if (!sdOk || !sd?.response?.[0]) {
@@ -1712,8 +1753,8 @@ router.get("/fixture/:id/analysis", async (req, res) => {
     const leagueId = item.league.id;
 
     const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
-      apiFetch(`/teams/statistics?team=${homeTeamId}&league=${leagueId}&season=2025`, STATS_TTL),
-      apiFetch(`/teams/statistics?team=${awayTeamId}&league=${leagueId}&season=2025`, STATS_TTL),
+      apiFetch(`/teams/statistics?team=${homeTeamId}&league=${leagueId}&season=2025`, SEASON_STATS_TTL),
+      apiFetch(`/teams/statistics?team=${awayTeamId}&league=${leagueId}&season=2025`, SEASON_STATS_TTL),
     ]);
 
     const avgGoals = (s: any, type: "for" | "against"): number => {
@@ -1920,7 +1961,7 @@ router.get("/player-stats", async (req, res) => {
     const { id, season = "2024" } = req.query as Record<string, string>;
     if (!id) return res.status(400).json({ error: "Query param 'id' is required" });
 
-    const { data, ok } = await apiFetch(`/players?id=${id}&season=${season}`, STATS_TTL);
+    const { data, ok } = await apiFetch(`/players?id=${id}&season=${season}`, FORM_TTL);
     const player = data?.response?.[0];
     if (!ok || !player) {
       return res.status(404).json({ error: "Player not found or API unavailable" });
@@ -1953,7 +1994,7 @@ router.get("/team-stats", async (req, res) => {
     const { team, league, season = "2024" } = req.query as Record<string, string>;
     if (!team || !league) return res.status(400).json({ error: "team and league are required" });
 
-    const { data, ok } = await apiFetch(`/teams/statistics?team=${team}&league=${league}&season=${season}`, STATS_TTL);
+    const { data, ok } = await apiFetch(`/teams/statistics?team=${team}&league=${league}&season=${season}`, SEASON_STATS_TTL);
     if (!ok || !data?.response) return res.status(404).json({ error: "Team stats not found or API unavailable" });
     return res.json(data.response);
   } catch (err: any) {
@@ -2015,8 +2056,8 @@ router.get("/fixture-analysis", async (req, res) => {
     }
 
     const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
-      apiFetch(`/teams/statistics?team=${homeTeam}&league=${league}&season=${season}`, STATS_TTL),
-      apiFetch(`/teams/statistics?team=${awayTeam}&league=${league}&season=${season}`, STATS_TTL),
+      apiFetch(`/teams/statistics?team=${homeTeam}&league=${league}&season=${season}`, SEASON_STATS_TTL),
+      apiFetch(`/teams/statistics?team=${awayTeam}&league=${league}&season=${season}`, SEASON_STATS_TTL),
     ]);
 
     if (!homeOk || !awayOk) {
@@ -2714,8 +2755,8 @@ router.get("/accumulator-of-the-day", async (_req, res) => {
       if (apiSuspended) break;
 
       const [{ data: homeData, ok: homeOk }, { data: awayData, ok: awayOk }] = await Promise.all([
-        apiFetch(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
-        apiFetch(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+        apiFetch(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, SEASON_STATS_TTL),
+        apiFetch(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, SEASON_STATS_TTL),
       ]);
 
       if (!homeOk || !awayOk) continue;
@@ -2913,7 +2954,7 @@ async function fetchTeamGoalAvg(teamId: number, leagueId: number): Promise<{ avg
   if (cached && Date.now() - cached.ts < GOALS_HIST_TTL) {
     return { avgFor: cached.avgFor, avgAgainst: cached.avgAgainst, played: cached.played };
   }
-  const { data, ok } = await scannerApiFetch(`/teams/statistics?team=${teamId}&league=${leagueId}&season=2025`, STATS_TTL);
+  const { data, ok } = await scannerApiFetch(`/teams/statistics?team=${teamId}&league=${leagueId}&season=2025`, SEASON_STATS_TTL);
   if (!ok || !data?.response) {
     if (cached) return { avgFor: cached.avgFor, avgAgainst: cached.avgAgainst, played: cached.played };
     return null;
@@ -2938,7 +2979,7 @@ async function fetchTeamCardAvg(teamId: number, leagueId: number): Promise<{ avg
     return { avg: cached.avg, played: cached.played };
   }
 
-  const { data, ok } = await scannerApiFetch(`/teams/statistics?team=${teamId}&league=${leagueId}&season=2025`, STATS_TTL);
+  const { data, ok } = await scannerApiFetch(`/teams/statistics?team=${teamId}&league=${leagueId}&season=2025`, SEASON_STATS_TTL);
   if (!ok || !data?.response) {
     if (cached) return { avg: cached.avg, played: cached.played };
     return null;
@@ -3277,7 +3318,17 @@ router.get("/live/stats/:fixtureId", (req, res) => {
 
 // ── api-status ─────────────────────────────────────────────────────────────────
 router.get("/api-status", (_req, res) => {
-  res.json({ suspended: apiSuspended, cacheSize: cache.size, liveCount: getLiveCount() });
+  const usagePct = DAILY_LIMIT > 0 ? Math.round(dailyCallCount / DAILY_LIMIT * 100) : 0;
+  res.json({
+    suspended:      apiSuspended,
+    cacheSize:      cache.size,
+    liveCount:      getLiveCount(),
+    dailyCallCount,
+    dailyCallLimit: DAILY_LIMIT,
+    usagePercent:   usagePct,
+    throttleActive: isThrottled(),
+    pollInterval:   isThrottled() ? 90 : 60,
+  });
 });
 
 // ── AI Betting Insights ────────────────────────────────────────────────────────
@@ -3357,8 +3408,8 @@ async function generateBettingInsights(): Promise<BettingInsights> {
     // a rate-limit hit here cannot cascade and freeze the Fixture or Match Data modules.
     // Shared cache Map means cache hits are free regardless of which function fetches first.
     const [{ data: homeData }, { data: awayData }] = await Promise.all([
-      apiFetchPlayer(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
-      apiFetchPlayer(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, STATS_TTL),
+      apiFetchPlayer(`/teams/statistics?team=${f.homeTeam.id}&league=${f.league.id}&season=2025`, SEASON_STATS_TTL),
+      apiFetchPlayer(`/teams/statistics?team=${f.awayTeam.id}&league=${f.league.id}&season=2025`, SEASON_STATS_TTL),
     ]);
 
     const hR = homeData?.response;

@@ -4,6 +4,15 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 12 — API Optimization: Quota Management)
+
+- **football-api.ts** — Three targeted optimizations to extend the free-tier 100-call/day quota:
+  1. **`SEASON_STATS_TTL = 12h`** (new constant) — all `/teams/statistics?`, `/standings?`, `/fixtures?team=...&last=5`, and `/players?id=...` calls now cached 12h instead of 10 min. Season stats don't change during the day; this cuts ~99% of repeated team-stat API calls
+  2. **Daily request counter** — `dailyCallCount` incremented inside `apiFetch()` on every real outbound request; resets at midnight; configurable via `API_DAILY_LIMIT` env var (default 100 for free tier)
+  3. **Adaptive live polling** — changed from `setInterval(30s)` to recursive `setTimeout` (`scheduleLiveRefresh`): 60s normal, auto-bumps to 90s when `dailyCallCount ≥ 80% × DAILY_LIMIT`; outer watchdog updated from 60s → 120s to match
+- **`/api-status` endpoint** now exposes: `dailyCallCount`, `dailyCallLimit`, `usagePercent`, `throttleActive`, `pollInterval`
+- **TTL constants clarified**: `STATS_TTL` = per-fixture in-match data (10 min); `SEASON_STATS_TTL` = team/player season stats (12h); `TEAMS_TTL` = standings (6h)
+
 ## Recent Changes (Session 11 — Live Match System Overhaul)
 
 - **live-engine.ts** (full rewrite):
