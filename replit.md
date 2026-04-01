@@ -4,6 +4,41 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 14 — Central matchDataWorker + DB Statistics Persistence)
+
+### New: `lib/match-data-worker.ts`
+Central background coordinator. The single named worker that orchestrates ALL batch fixture fetches:
+- **Upcoming matches** (`fixtures?next=20`) — refreshed every **5 min** (was 10 min in `FIXTURE_LIST_TTL`)
+- **Finished matches** (`fixtures?last=20`) — refreshed every **15 min** (was NOT fetched at all)
+- **Live matches** — handled separately by `live-engine` (60 s adaptive); worker just tracks the timing
+- **Emergency guard** — skips all fetches when `isEmergency()` returns true
+- Exposes `getStatus()` → `WorkerStatus` (running, totalCycles, lastCycleAt, upcomingNextInSec, finishedNextInSec)
+- Callbacks-based design to avoid circular imports with the routes layer
+
+### New fetch functions in `football-api.ts`
+- `fetchUpcomingFixtures()` — calls `?next=20`, saves to DB. Uses `UPCOMING_TTL = 5 min` for apiFetch cache
+- `fetchFinishedFixtures()` — calls `?last=20`, saves to DB. Uses `FINISHED_TTL = 15 min` for apiFetch cache
+- Both injected into `matchDataWorker.configure()` on startup
+
+### New canonical frontend endpoints
+- `GET /api/liveMatches` — alias for `/api/live/matches`; serves from live-engine-cache
+- `GET /api/upcomingMatches` — serves NS/TBD fixtures from DB; includes `nextRefreshInSec`
+- `GET /api/matchDetails/:id` — serves from live-cache first, then DB fallback; lazy-loads stats
+- `GET /api/worker/status` — worker telemetry (cycles, usage %, next fetch countdowns)
+
+### `fixture-db.ts` — `team_stats_cache` table (statistics persistence)
+- New `team_stats_cache` table auto-created on module load
+- `saveTeamStats(teamId, leagueId, season, data)` — upsert after successful API fetch
+- `getTeamStats(teamId, leagueId, season, ttlMs)` — DB-first read with TTL check
+- `/fixture/:id/team-stats` now checks DB before calling API; saves on successful fetch
+- Team stats now survive server restarts — no re-fetching daily quota on cold start
+
+### API call reduction impact
+- `fixtures?last=20` — zero calls before, now one call per 15 min (was missing entirely)
+- `fixtures?next=20` — same call count but now explicit with 5 min TTL
+- Team stats (season) — DB-first means zero API calls for all cached teams on restart
+- Total theoretical max (all workers combined): ~36 calls/day at current usage
+
 ## Recent Changes (Session 13 — Advanced API Reduction System)
 
 - **football-api.ts** — Emergency mode architecture (two-tier quota management):

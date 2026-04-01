@@ -6,6 +6,8 @@ import {
   isDBFresh,
   getTopLeaguePrelivFromDB,
   getScannerFixtures,
+  saveTeamStats,
+  getTeamStats,
   type CachedFixture,
 } from "../lib/fixture-db.js";
 import {
@@ -21,6 +23,7 @@ import {
 } from "../lib/live-engine.js";
 import { broadcastLiveUpdate } from "../lib/live-ws.js";
 import { cacheManager } from "../lib/cache-manager.js";
+import { matchDataWorker, UPCOMING_TTL, FINISHED_TTL } from "../lib/match-data-worker.js";
 
 const router: IRouter = Router();
 
@@ -81,7 +84,10 @@ const ODDS_TTL           =  5 * 60 * 1000;       //  5 min  — odds
 const STATS_TTL          = 10 * 60 * 1000;       // 10 min  — per-fixture in-match statistics
 const SEASON_STATS_TTL   = 12 * 60 * 60 * 1000;  // 12 h    — team/player season stats (spec)
 const MATCH_TTL          =  2 * 60 * 1000;        //  2 min  — match payload (fallback default)
-const FIXTURE_LIST_TTL   = 10 * 60 * 1000;        // 10 min  — today's fixture lists (spec)
+const FIXTURE_LIST_TTL   = 10 * 60 * 1000;        // 10 min  — today's date-based fixture lists
+// matchDataWorker owns these TTLs (imported from lib):
+// UPCOMING_TTL = 5 min  — fixtures?next=20  (upcoming matches)
+// FINISHED_TTL = 15 min — fixtures?last=20  (finished matches)
 const PRELIVE_TTL        = 60 * 1000;             // 60 s    — pre-live fixtures (in-memory dedup)
 const SQUAD_TTL          = 24 * 60 * 60 * 1000;   // 24 h    — squad rosters
 const FORM_TTL           = 12 * 60 * 60 * 1000;   // 12 h    — player performance stats (spec)
@@ -503,6 +509,47 @@ function scheduleBackgroundRefresh() {
 }
 
 scheduleBackgroundRefresh();
+
+// ── matchDataWorker: upcoming + finished batch fetchers ────────────────────────
+// These two functions are injected into matchDataWorker as callbacks to avoid
+// circular imports (the worker lib cannot import from the routes layer).
+
+/**
+ * Fetches the next 20 scheduled fixtures from the API and persists to DB.
+ * Called by matchDataWorker every 5 minutes.
+ * Uses UPCOMING_TTL as the apiFetch cache TTL so back-to-back calls within the
+ * same 5-minute window always return the cached result — zero wasted API calls.
+ */
+async function fetchUpcomingFixtures(): Promise<void> {
+  if (apiSuspended) return;
+  const { data, ok } = await apiFetch(`/fixtures?next=20`, UPCOMING_TTL);
+  if (ok && data?.response && (data.results ?? 0) > 0) {
+    await saveFixturesToDB(data.response);
+    console.log(`[matchDataWorker/upcoming] Persisted ${data.results} upcoming fixtures`);
+  }
+}
+
+/**
+ * Fetches the last 20 finished fixtures from the API and persists to DB.
+ * Called by matchDataWorker every 15 minutes.
+ * Keeps recently finished match results available for the frontend without any
+ * per-request API calls.
+ */
+async function fetchFinishedFixtures(): Promise<void> {
+  if (apiSuspended) return;
+  const { data, ok } = await apiFetch(`/fixtures?last=20`, FINISHED_TTL);
+  if (ok && data?.response && (data.results ?? 0) > 0) {
+    await saveFixturesToDB(data.response);
+    console.log(`[matchDataWorker/finished] Persisted ${data.results} finished fixtures`);
+  }
+}
+
+matchDataWorker.configure({
+  fetchUpcoming: fetchUpcomingFixtures,
+  fetchFinished: fetchFinishedFixtures,
+  isEmergency,
+});
+matchDataWorker.start();
 
 // ── Live Match Engine ── Worker 2 (60 s) + Worker 3 (90 s) ────────────────────
 startLiveEngine();
@@ -1586,14 +1633,36 @@ router.get("/fixture/:id/team-stats", async (req, res) => {
       };
     };
 
-    // Fetch season stats for both teams in parallel
-    const [{ data: homeSeasonData, ok: homeSeasonOk }, { data: awaySeasonData, ok: awaySeasonOk }] = await Promise.all([
-      apiFetch(`/teams/statistics?team=${homeId}&league=${leagueId}&season=2025`, SEASON_STATS_TTL),
-      apiFetch(`/teams/statistics?team=${awayId}&league=${leagueId}&season=2025`, SEASON_STATS_TTL),
+    // Fetch season stats for both teams — DB-first, then API fallback.
+    // Successful API responses are persisted to team_stats_cache so they
+    // survive server restarts (avoids re-spending daily quota on cold starts).
+    const SEASON = "2025";
+    const [dbHome, dbAway] = await Promise.all([
+      getTeamStats(homeId, leagueId, SEASON, SEASON_STATS_TTL),
+      getTeamStats(awayId, leagueId, SEASON, SEASON_STATS_TTL),
     ]);
 
-    let homeStats = buildFromSeasonStats(homeSeasonOk ? homeSeasonData?.response : null);
-    let awayStats = buildFromSeasonStats(awaySeasonOk ? awaySeasonData?.response : null);
+    let homeSeasonData: any = dbHome ? { response: dbHome.data } : null;
+    let awaySeasonData: any = dbAway ? { response: dbAway.data } : null;
+
+    // API fetch only for teams not yet in DB (or whose DB record has expired)
+    if (!dbHome || !dbAway) {
+      const fetches = await Promise.all([
+        dbHome ? Promise.resolve({ data: null, ok: false }) : apiFetch(`/teams/statistics?team=${homeId}&league=${leagueId}&season=${SEASON}`, SEASON_STATS_TTL),
+        dbAway ? Promise.resolve({ data: null, ok: false }) : apiFetch(`/teams/statistics?team=${awayId}&league=${leagueId}&season=${SEASON}`, SEASON_STATS_TTL),
+      ]);
+      if (!dbHome && fetches[0].ok && fetches[0].data?.response) {
+        homeSeasonData = fetches[0].data;
+        saveTeamStats(homeId, leagueId, SEASON, fetches[0].data.response).catch(() => {});
+      }
+      if (!dbAway && fetches[1].ok && fetches[1].data?.response) {
+        awaySeasonData = fetches[1].data;
+        saveTeamStats(awayId, leagueId, SEASON, fetches[1].data.response).catch(() => {});
+      }
+    }
+
+    let homeStats = buildFromSeasonStats(homeSeasonData?.response ?? null);
+    let awayStats = buildFromSeasonStats(awaySeasonData?.response ?? null);
 
     // Retry once for any team with empty stats (could be temporary API hiccup)
     if (!homeStats) {
@@ -3355,10 +3424,91 @@ router.get("/live/stats/:fixtureId", (req, res) => {
   return res.json({ available: true, ...stats });
 });
 
+// ── GET /liveMatches ── (alias for /live/matches) ─────────────────────────────
+// Canonical endpoint used by the frontend to read live data from cache/DB.
+// The frontend NEVER calls API-Football — this serves from the in-memory live store.
+router.get("/liveMatches", (_req, res) => {
+  const matches  = getLiveMatches();
+  const finished = getFinishedMatches();
+  const ts       = Date.now();
+  const enriched = matches.map(m => enrichMatchForResponse(m, ts));
+  return res.json({
+    available: enriched.length > 0,
+    count:     enriched.length,
+    matches:   enriched,
+    finished,
+    ts,
+    source: "live-engine-cache",
+  });
+});
+
+// ── GET /upcomingMatches ──────────────────────────────────────────────────────
+// Returns scheduled (not yet started) fixtures from the DB.
+// Data is refreshed by matchDataWorker every 5 minutes; no per-request API calls.
+router.get("/upcomingMatches", async (_req, res) => {
+  try {
+    const { fixtures, ageMs } = await getFixturesFromDB();
+    const upcoming = fixtures.filter(f =>
+      f.status.short === "NS" || f.status.short === "TBD"
+    );
+    return res.json({
+      available:   upcoming.length > 0,
+      count:       upcoming.length,
+      matches:     upcoming,
+      cacheAgeMs:  ageMs,
+      nextRefreshInSec: matchDataWorker.getStatus().upcomingNextInSec,
+      source: "db-cache",
+    });
+  } catch (err: any) {
+    console.error("[upcomingMatches]", err.message);
+    return res.status(500).json({ available: false, matches: [], error: err.message });
+  }
+});
+
+// ── GET /matchDetails/:id ─────────────────────────────────────────────────────
+// Returns full fixture detail served from DB/cache.
+// Statistics, lineups and events are lazy-loaded — only fetched when this endpoint
+// is requested (not during background refresh).
+router.get("/matchDetails/:id", async (req, res) => {
+  const id = parseInt(req.params.id ?? "", 10);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid match id" });
+
+  // Try live store first (most up-to-date for in-progress matches)
+  const liveMatches = getLiveMatches();
+  const liveMatch   = liveMatches.find(m => m.fixture.id === id);
+  if (liveMatch) {
+    const stats  = getLiveStats(id);
+    const events = getLiveEvents(id);
+    return res.json({ available: true, source: "live-cache", match: liveMatch, stats, events });
+  }
+
+  // Fall back to DB cache
+  const dbMatch = await getFixtureByIdFromDB(id).catch(() => null);
+  if (dbMatch) {
+    return res.json({ available: true, source: "db-cache", match: dbMatch, stats: null, events: null });
+  }
+
+  return res.status(404).json({ available: false, error: "Match not found" });
+});
+
+// ── GET /worker/status ────────────────────────────────────────────────────────
+// Exposes matchDataWorker telemetry for observability.
+router.get("/worker/status", (_req, res) => {
+  return res.json({
+    ...matchDataWorker.getStatus(),
+    emergencyMode:   isEmergency(),
+    throttleActive:  isThrottled(),
+    dailyCallCount,
+    dailyCallLimit:  DAILY_LIMIT,
+    usagePercent:    DAILY_LIMIT > 0 ? Math.round(dailyCallCount / DAILY_LIMIT * 100) : 0,
+  });
+});
+
 // ── api-status ─────────────────────────────────────────────────────────────────
 router.get("/api-status", (_req, res) => {
   const usagePct = DAILY_LIMIT > 0 ? Math.round(dailyCallCount / DAILY_LIMIT * 100) : 0;
   const emergency = isEmergency();
+  const workerStatus = matchDataWorker.getStatus();
   res.json({
     suspended:      apiSuspended,
     cacheSize:      cache.size,
@@ -3370,6 +3520,13 @@ router.get("/api-status", (_req, res) => {
     emergencyMode:  emergency,
     pollInterval:   emergency ? 90 : 60,
     bgJobsActive:   !emergency,
+    worker: {
+      running:             workerStatus.running,
+      totalCycles:         workerStatus.totalCycles,
+      lastCycleAt:         workerStatus.lastCycleAt,
+      upcomingNextInSec:   workerStatus.upcomingNextInSec,
+      finishedNextInSec:   workerStatus.finishedNextInSec,
+    },
   });
 });
 

@@ -268,3 +268,96 @@ const FIXTURE_FRESH_MS = 10 * 60 * 1000; // 10 minutes
 export function isDBFresh(ageMs: number): boolean {
   return ageMs < FIXTURE_FRESH_MS;
 }
+
+// ── team_stats_cache ── "statistics" table ────────────────────────────────────
+//
+// Persists team season statistics across server restarts.
+// Without this, the 12-hour in-memory cache is lost on every deploy, forcing
+// immediate API re-fetches for all team stats on cold start.
+//
+// Schema: team_id + league_id + season form the composite unique key.
+
+let teamStatsCacheReady = false;
+
+async function ensureTeamStatsTable(): Promise<void> {
+  if (teamStatsCacheReady) return;
+  try {
+    const pool = getPool();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS team_stats_cache (
+        id           SERIAL PRIMARY KEY,
+        team_id      INT          NOT NULL,
+        league_id    INT          NOT NULL,
+        season       VARCHAR(10)  NOT NULL,
+        data         JSONB        NOT NULL,
+        last_updated TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        UNIQUE (team_id, league_id, season)
+      )
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_team_stats_lookup
+      ON team_stats_cache (team_id, league_id, season)
+    `);
+    teamStatsCacheReady = true;
+  } catch (err: any) {
+    console.error("[fixture-db] ensureTeamStatsTable error:", err.message);
+  }
+}
+
+// Auto-create on module load
+ensureTeamStatsTable().catch(() => {});
+
+/**
+ * Persist team season stats to DB.
+ * Called after a successful API-Football /teams/statistics fetch.
+ */
+export async function saveTeamStats(
+  teamId: number,
+  leagueId: number,
+  season: string,
+  data: unknown,
+): Promise<void> {
+  try {
+    await ensureTeamStatsTable();
+    const pool = getPool();
+    await pool.query(
+      `INSERT INTO team_stats_cache (team_id, league_id, season, data, last_updated)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (team_id, league_id, season)
+       DO UPDATE SET data = EXCLUDED.data, last_updated = NOW()`,
+      [teamId, leagueId, season, JSON.stringify(data)],
+    );
+  } catch (err: any) {
+    console.error("[fixture-db] saveTeamStats error:", err.message);
+  }
+}
+
+/**
+ * Read team season stats from DB.
+ * Returns null if not found or if the record is older than ttlMs.
+ */
+export async function getTeamStats(
+  teamId: number,
+  leagueId: number,
+  season: string,
+  ttlMs: number,
+): Promise<{ data: unknown } | null> {
+  try {
+    await ensureTeamStatsTable();
+    const pool = getPool();
+    const result = await pool.query(
+      `SELECT data, EXTRACT(EPOCH FROM (NOW() - last_updated)) * 1000 AS age_ms
+       FROM team_stats_cache
+       WHERE team_id = $1 AND league_id = $2 AND season = $3
+       LIMIT 1`,
+      [teamId, leagueId, season],
+    );
+    if (result.rows.length === 0) return null;
+    const ageMs = Number(result.rows[0].age_ms ?? Infinity);
+    if (ageMs > ttlMs) return null; // stale
+    return { data: result.rows[0].data };
+  } catch (err: any) {
+    console.error("[fixture-db] getTeamStats error:", err.message);
+    return null;
+  }
+}
