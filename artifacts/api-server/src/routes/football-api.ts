@@ -24,6 +24,13 @@ import {
 import { broadcastLiveUpdate } from "../lib/live-ws.js";
 import { cacheManager } from "../lib/cache-manager.js";
 import { matchDataWorker, UPCOMING_TTL, FINISHED_TTL } from "../lib/match-data-worker.js";
+import {
+  recordCall,
+  recordCacheHit,
+  coalescedFetch,
+  getGuardStats,
+  getRequestLog,
+} from "../lib/request-guard.js";
 
 const router: IRouter = Router();
 
@@ -158,13 +165,19 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
   const cacheKey = path;
   const cached = cache.get(cacheKey);
 
-  if (cached && Date.now() - cached.ts < ttl) return { data: cached.data, ok: true };
+  // ① In-memory TTL cache hit — fastest path, zero API cost
+  if (cached && Date.now() - cached.ts < ttl) {
+    recordCacheHit(path);
+    return { data: cached.data, ok: true };
+  }
 
+  // ② Suspended state guard (quota exhausted or rate-limited)
   if (apiSuspended && Date.now() - lastSuspendedCheck < SUSPENDED_CACHE_TTL) {
     if (cached) return { data: cached.data, ok: true, stale: true };
     return { data: null, ok: false };
   }
 
+  // ③ API key presence check
   const apiKey = process.env.API_FOOTBALL_KEY;
   if (!apiKey) {
     console.error("[api-football] ERROR: API_FOOTBALL_KEY not set.");
@@ -172,70 +185,84 @@ async function apiFetch(path: string, ttl = MATCH_TTL): Promise<{ data: any; ok:
     return { data: null, ok: false };
   }
 
-  try {
-    trackApiCall(); // count every real outbound API request
-    const res = await fetch(`${API_BASE}${path}`, {
-      method: "GET",
-      headers: {
-        "x-apisports-key": apiKey,
-        "x-rapidapi-host": "v3.football.api-sports.io",
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) {
-      console.error(`[api-football] HTTP ${res.status} for ${path}`);
+  // ④ Inflight coalescing + loop detection + circuit breaker.
+  //    coalescedFetch ensures only ONE HTTP request flies for a given path,
+  //    even if N callers arrive simultaneously — all get the same promise.
+  return coalescedFetch(cacheKey, async () => {
+    // ⑤ Loop detection / circuit-breaker (runs once per real outbound call,
+    //    not once per coalesced waiter — that's the key invariant).
+    if (!recordCall(path)) {
+      // Endpoint is blocked (loop detected or circuit still open).
+      // Serve stale cache if available; otherwise return a soft error.
       if (cached) return { data: cached.data, ok: true, stale: true };
       return { data: null, ok: false };
     }
-    const data: any = await res.json();
 
-    if (data.errors && Object.keys(data.errors).length > 0) {
-      const errKey = Object.keys(data.errors)[0] ?? "";
-      const errVal = String(Object.values(data.errors)[0] ?? "");
-      const fullMsg = errVal.toLowerCase();
-
-      // Always log the real error so it's visible in server logs
-      console.error(`[api-football] API error for ${path} — key:"${errKey}" msg:"${errVal}"`);
-
-      // Daily request limit exhausted — suspend briefly to protect remaining quota
-      // Must be checked BEFORE isPlanError since its message can mention "plan"
-      const isDailyLimit = errKey === "requests" || fullMsg.includes("request limit") || fullMsg.includes("reached the request");
-
-      // Plan restriction: endpoint not available on current subscription
-      // e.g. "Free plans do not have access to the Next parameter."
-      // Do NOT suspend — this is a plan mismatch, not a quota issue
-      const isPlanError = !isDailyLimit && (errKey === "plan" || fullMsg.includes("not have access"));
-
-      // True account suspension
-      const isAccountSuspended = !isPlanError && fullMsg.includes("suspend");
-
-      // Over-rate or general rate limit
-      const isRateLimit = !isPlanError && (fullMsg.includes("ratelimit") || fullMsg.includes("too many"));
-
-      if (isAccountSuspended || isDailyLimit || isRateLimit) {
-        apiSuspended = true;
-        lastSuspendedCheck = Date.now();
-        console.warn(`[api-football] ${isAccountSuspended ? "Account suspended" : isDailyLimit ? "Daily request limit reached" : "Rate limit hit"} — pausing API calls`);
+    try {
+      trackApiCall(); // count every real outbound API request
+      const res = await fetch(`${API_BASE}${path}`, {
+        method: "GET",
+        headers: {
+          "x-apisports-key": apiKey,
+          "x-rapidapi-host": "v3.football.api-sports.io",
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) {
+        console.error(`[api-football] HTTP ${res.status} for ${path}`);
+        if (cached) return { data: cached.data, ok: true, stale: true };
+        return { data: null, ok: false };
       }
+      const data: any = await res.json();
 
-      if (isPlanError) {
-        console.warn(`[api-football] Plan restriction — ${path} not available on current plan. Returning empty.`);
+      if (data.errors && Object.keys(data.errors).length > 0) {
+        const errKey = Object.keys(data.errors)[0] ?? "";
+        const errVal = String(Object.values(data.errors)[0] ?? "");
+        const fullMsg = errVal.toLowerCase();
+
+        // Always log the real error so it's visible in server logs
+        console.error(`[api-football] API error for ${path} — key:"${errKey}" msg:"${errVal}"`);
+
+        // Daily request limit exhausted — suspend briefly to protect remaining quota
+        // Must be checked BEFORE isPlanError since its message can mention "plan"
+        const isDailyLimit = errKey === "requests" || fullMsg.includes("request limit") || fullMsg.includes("reached the request");
+
+        // Plan restriction: endpoint not available on current subscription
+        // e.g. "Free plans do not have access to the Next parameter."
+        // Do NOT suspend — this is a plan mismatch, not a quota issue
+        const isPlanError = !isDailyLimit && (errKey === "plan" || fullMsg.includes("not have access"));
+
+        // True account suspension
+        const isAccountSuspended = !isPlanError && fullMsg.includes("suspend");
+
+        // Over-rate or general rate limit
+        const isRateLimit = !isPlanError && (fullMsg.includes("ratelimit") || fullMsg.includes("too many"));
+
+        if (isAccountSuspended || isDailyLimit || isRateLimit) {
+          apiSuspended = true;
+          lastSuspendedCheck = Date.now();
+          console.warn(`[api-football] ${isAccountSuspended ? "Account suspended" : isDailyLimit ? "Daily request limit reached" : "Rate limit hit"} — pausing API calls`);
+        }
+
+        if (isPlanError) {
+          console.warn(`[api-football] Plan restriction — ${path} not available on current plan. Returning empty.`);
+          return { data: null, ok: false };
+        }
+
+        if (cached) return { data: cached.data, ok: true, stale: true };
         return { data: null, ok: false };
       }
 
+      apiSuspended = false;
+      lastSuspendedCheck = 0;
+      cache.set(cacheKey, { data, ts: Date.now() });
+      return { data, ok: true };
+    } catch (err: any) {
+      console.error(`[api-football] fetch error for ${path}:`, err.message);
       if (cached) return { data: cached.data, ok: true, stale: true };
       return { data: null, ok: false };
     }
-
-    apiSuspended = false;
-    lastSuspendedCheck = 0;
-    cache.set(cacheKey, { data, ts: Date.now() });
-    return { data, ok: true };
-  } catch (err: any) {
-    console.error(`[api-football] fetch error for ${path}:`, err.message);
-    if (cached) return { data: cached.data, ok: true, stale: true };
-    return { data: null, ok: false };
-  }
+  }); // end coalescedFetch
 }
 
 // ── Non-blocking player fetch: NEVER touches apiSuspended — match loading is safe
@@ -3427,7 +3454,9 @@ router.get("/live/stats/:fixtureId", (req, res) => {
 // ── GET /liveMatches ── (alias for /live/matches) ─────────────────────────────
 // Canonical endpoint used by the frontend to read live data from cache/DB.
 // The frontend NEVER calls API-Football — this serves from the in-memory live store.
+// Cache-Control enforces minimum 60 s refresh interval on any HTTP client.
 router.get("/liveMatches", (_req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
   const matches  = getLiveMatches();
   const finished = getFinishedMatches();
   const ts       = Date.now();
@@ -3445,7 +3474,9 @@ router.get("/liveMatches", (_req, res) => {
 // ── GET /upcomingMatches ──────────────────────────────────────────────────────
 // Returns scheduled (not yet started) fixtures from the DB.
 // Data is refreshed by matchDataWorker every 5 minutes; no per-request API calls.
+// Cache-Control enforces minimum 5 min refresh interval on any HTTP client.
 router.get("/upcomingMatches", async (_req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
   try {
     const { fixtures, ageMs } = await getFixturesFromDB();
     const upcoming = fixtures.filter(f =>
@@ -3469,6 +3500,7 @@ router.get("/upcomingMatches", async (_req, res) => {
 // Returns full fixture detail served from DB/cache.
 // Statistics, lineups and events are lazy-loaded — only fetched when this endpoint
 // is requested (not during background refresh).
+// Cache-Control: 30 s for live matches, 3 min for finished/upcoming.
 router.get("/matchDetails/:id", async (req, res) => {
   const id = parseInt(req.params.id ?? "", 10);
   if (isNaN(id)) return res.status(400).json({ error: "Invalid match id" });
@@ -3477,6 +3509,7 @@ router.get("/matchDetails/:id", async (req, res) => {
   const liveMatches = getLiveMatches();
   const liveMatch   = liveMatches.find(m => m.fixture.id === id);
   if (liveMatch) {
+    res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
     const stats  = getLiveStats(id);
     const events = getLiveEvents(id);
     return res.json({ available: true, source: "live-cache", match: liveMatch, stats, events });
@@ -3485,6 +3518,7 @@ router.get("/matchDetails/:id", async (req, res) => {
   // Fall back to DB cache
   const dbMatch = await getFixtureByIdFromDB(id).catch(() => null);
   if (dbMatch) {
+    res.setHeader("Cache-Control", "public, max-age=180, stale-while-revalidate=360");
     return res.json({ available: true, source: "db-cache", match: dbMatch, stats: null, events: null });
   }
 
@@ -3492,7 +3526,7 @@ router.get("/matchDetails/:id", async (req, res) => {
 });
 
 // ── GET /worker/status ────────────────────────────────────────────────────────
-// Exposes matchDataWorker telemetry for observability.
+// Exposes matchDataWorker + request-guard telemetry for observability.
 router.get("/worker/status", (_req, res) => {
   return res.json({
     ...matchDataWorker.getStatus(),
@@ -3501,6 +3535,31 @@ router.get("/worker/status", (_req, res) => {
     dailyCallCount,
     dailyCallLimit:  DAILY_LIMIT,
     usagePercent:    DAILY_LIMIT > 0 ? Math.round(dailyCallCount / DAILY_LIMIT * 100) : 0,
+    guard:           getGuardStats(),
+  });
+});
+
+// ── GET /request-log ──────────────────────────────────────────────────────────
+// Returns the request-guard circular log for debugging loops and duplicate calls.
+// Query params:
+//   ?limit=N      — how many entries to return (default 100, max 500)
+//   ?filter=TYPE  — api_call | cache_hit | inflight | blocked | loop_detected
+router.get("/request-log", (req, res) => {
+  const limit  = Math.min(Number(req.query.limit ?? 100), 500);
+  const filter = req.query.filter as string | undefined;
+  const validFilters = ["api_call", "cache_hit", "inflight", "blocked", "loop_detected"];
+  const safeFilter   = validFilters.includes(filter ?? "") ? filter as any : undefined;
+
+  const log   = getRequestLog(limit, safeFilter);
+  const stats = getGuardStats();
+
+  return res.json({
+    count: log.length,
+    stats,
+    entries: log.map(e => ({
+      ...e,
+      time: new Date(e.timestamp).toISOString(),
+    })),
   });
 });
 
@@ -3509,6 +3568,7 @@ router.get("/api-status", (_req, res) => {
   const usagePct = DAILY_LIMIT > 0 ? Math.round(dailyCallCount / DAILY_LIMIT * 100) : 0;
   const emergency = isEmergency();
   const workerStatus = matchDataWorker.getStatus();
+  const guard        = getGuardStats();
   res.json({
     suspended:      apiSuspended,
     cacheSize:      cache.size,
@@ -3526,6 +3586,16 @@ router.get("/api-status", (_req, res) => {
       lastCycleAt:         workerStatus.lastCycleAt,
       upcomingNextInSec:   workerStatus.upcomingNextInSec,
       finishedNextInSec:   workerStatus.finishedNextInSec,
+    },
+    guard: {
+      totalApiCalls:    guard.totalApiCalls,
+      totalCacheHits:   guard.totalCacheHits,
+      totalInflight:    guard.totalInflight,
+      totalBlocked:     guard.totalBlocked,
+      totalLoopEvents:  guard.totalLoopEvents,
+      cacheHitRate:     guard.cacheHitRate,
+      inflightNow:      guard.inflightCount,
+      blockedEndpoints: guard.blockedEndpoints,
     },
   });
 });

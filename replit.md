@@ -4,6 +4,39 @@
 
 PalpiteStats — a premium dark-themed football analytics and betting insights platform. Provides global football statistics, match analysis, player stats, bookmaker odds comparison, AI-powered predictions, value bets, user authentication, 5-day free trial, and subscription management.
 
+## Recent Changes (Session 15 — API Loop Detection and Protection System)
+
+### New: `lib/request-guard.ts`
+Self-contained guard module (zero external dependencies) integrated into every `apiFetch()` call:
+
+**Loop detection:** Sliding-window counter per endpoint. If ≥5 calls in 10 s → `LOOP DETECTED` logged → circuit-breaker opens for 60 s.
+
+**Circuit-breaker:** `isBlocked(endpoint)` + `recordCall(endpoint)`. Blocked calls serve stale in-memory cache or return soft-error — no API call made. Auto-clears after 60 s.
+
+**Inflight coalescing:** `coalescedFetch(key, fetcher)` — if N concurrent requests for the same endpoint arrive simultaneously, only ONE HTTP call is made; all waiters receive the same promise result. Prevents duplicate calls from parallel component mounts.
+
+**Request log:** Circular buffer (500 entries). Every API call, cache hit, inflight join, and block is logged with endpoint, timestamp, outcome, and note. Filterable by outcome type.
+
+**Aggregate counters:** `totalApiCalls`, `totalCacheHits`, `totalInflight`, `totalBlocked`, `totalLoopEvents`, `cacheHitRate` — all live in-process.
+
+### Integration into `apiFetch()` — 5-step flow
+①  Cache hit → `recordCacheHit()` → return (no API call)
+②  Suspended state → return stale/error
+③  API key check → return stale/error
+④  `coalescedFetch(key, ...)` — concurrent callers join existing promise
+⑤  Inside coalesced fetcher: `recordCall()` → if blocked return stale, else `trackApiCall()` + HTTP fetch
+
+### New endpoints
+- `GET /api/request-log?limit=N&filter=TYPE` — paginated guard log (loop_detected, blocked, inflight, cache_hit, api_call)
+- `GET /api/worker/status` now includes `guard` field
+- `GET /api/api-status` now includes `guard` field (cacheHitRate, blockedEndpoints, inflightNow, etc.)
+
+### Frontend interval protection (Cache-Control headers)
+- `GET /api/liveMatches` → `Cache-Control: public, max-age=60, stale-while-revalidate=120`
+- `GET /api/upcomingMatches` → `Cache-Control: public, max-age=300, stale-while-revalidate=600`
+- `GET /api/matchDetails/:id` → live: `max-age=30`, DB fallback: `max-age=180`
+  HTTP clients (browsers, CDNs, proxies) cannot re-request before the stated interval.
+
 ## Recent Changes (Session 14 — Central matchDataWorker + DB Statistics Persistence)
 
 ### New: `lib/match-data-worker.ts`
